@@ -1,0 +1,24 @@
+[Unit]
+Description=BoardDocs PostgreSQL 16 with pgvector
+After=network-online.target
+
+[Container]
+Image=docker.io/pgvector/pgvector:pg16
+ContainerName=boarddocs-postgres
+PublishPort=127.0.0.1:5432:5432
+Environment=POSTGRES_DB=qorvault
+Environment=POSTGRES_USER=qorvault
+Environment=POSTGRES_PASSWORD=CHANGE_ME_ON_FIRST_DEPLOY
+Volume=boarddocs_pgdata:/var/lib/postgresql/data
+HealthCmd=pg_isready -U qorvault -d qorvault
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=5
+AutoUpdate=registry
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

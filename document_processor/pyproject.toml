@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "document_processor"
+version = "0.1.0"
+description = "Text extraction and chunking for BoardDocs RAG pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.29.0",
+    "httpx>=0.27.0",
+    "tiktoken>=0.7.0",
+    "beautifulsoup4>=4.12.0",
+    "pydantic>=2.0",
+    "python-pptx>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"

@@ -1,0 +1,37 @@
+# BoardDocs RAG API — FastAPI query service
+# ------------------------------------------------------------------
+# Runs the RAG query API that embeds questions (ONNX mxbai-embed-large),
+# retrieves chunks from Qdrant, and synthesizes answers via Claude.
+# Provides both a native /api/v1/query endpoint and an OpenAI-compatible
+# /v1/chat/completions endpoint for Open WebUI integration.
+#
+# Install to: ~/.config/systemd/user/ksd-rag-api.service
+#
+# Dependencies:
+#   - PostgreSQL container (boarddocs-postgres) must be running
+#   - Qdrant container (boarddocs-qdrant) must be running
+#   - ANTHROPIC_API_KEY must be set in ~/ksd-boarddocs-rag/.env
+#
+# Enable and start:
+#   systemctl --user daemon-reload
+#   systemctl --user enable ksd-rag-api
+#   systemctl --user start ksd-rag-api
+#
+# Verify:
+#   curl http://127.0.0.1:8000/health
+# ------------------------------------------------------------------
+
+[Unit]
+Description=BoardDocs RAG API — FastAPI query service for Open WebUI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/qorvault/projects/ksd-boarddocs-rag/rag_api
+EnvironmentFile=/home/qorvault/projects/ksd-boarddocs-rag/.env
+ExecStart=/home/qorvault/projects/ksd-boarddocs-rag/rag_api/venv/bin/python -m rag_api
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,44 @@
+# llama-server — Local LLM inference for Open WebUI
+# ------------------------------------------------------------------
+# Runs llama.cpp's HTTP server with the Qwen3-30B-A3B MoE model
+# (30B total params, 3B active per token, Q8_K_XL quantization).
+# Provides an OpenAI-compatible API on port 8080 that Open WebUI
+# connects to for conversational responses.
+#
+# Install to: ~/.config/systemd/user/ksd-llama-server.service
+#
+# Tuning notes:
+#   --fit off may be required on some GPUs where llama.cpp's auto-fit
+#   logic crashes during model load.  --gpu-layers 99 offloads all
+#   model layers to the GPU; reduce if you run out of VRAM.
+#
+# Model file (~34 GB):
+#   /opt/models/chat/qwen3-30b-q8_k_xl/Qwen3-30B-A3B-UD-Q8_K_XL.gguf
+#
+# Enable and start:
+#   systemctl --user daemon-reload
+#   systemctl --user enable ksd-llama-server
+#   systemctl --user start ksd-llama-server
+#
+# Verify:
+#   curl http://127.0.0.1:8080/v1/models
+# ------------------------------------------------------------------
+
+[Unit]
+Description=llama-server — Qwen3-30B-A3B chat model for Open WebUI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/llama.cpp/build/bin/llama-server \
+    --model /opt/models/chat/qwen3-30b-q8_k_xl/Qwen3-30B-A3B-UD-Q8_K_XL.gguf \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --ctx-size 8192 \
+    --gpu-layers 99 \
+    --fit off
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

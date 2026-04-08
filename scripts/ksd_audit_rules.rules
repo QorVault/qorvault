@@ -1,0 +1,22 @@
+# KSD BoardDocs RAG — auditd rules for AI activity monitoring
+# Install: sudo cp this file to /etc/audit/rules.d/ksd.rules
+# Then: sudo augenrules --load
+#
+# NOTE: Fedora's default audit.rules contains "-a never,task" which
+# prevents audit contexts from being created for new processes,
+# blocking ALL syscall-based monitoring. To fix this, either:
+#   1. Comment out "-a task,never" in /etc/audit/rules.d/audit.rules
+#   2. Or replace it with: -a task,never -F uid!=1000
+#      (suppresses noise for all users except donald, uid 1000)
+#
+# After editing audit.rules, run: sudo augenrules --load
+
+# Monitor all file operations WITHIN the project directory (recursive).
+-a always,exit -F arch=b64 -F dir=/home/qorvault/ksd-boarddocs-rag -F perm=rwxa -k ksd_activity
+-a always,exit -F arch=b32 -F dir=/home/qorvault/ksd-boarddocs-rag -F perm=rwxa -k ksd_activity
+
+# Monitor Claude Code binary execution
+-w /home/qorvault/.local/bin/claude -p x -k claude_execution
+
+# Monitor Python interpreter execution
+-w /usr/bin/python3 -p x -k python_execution

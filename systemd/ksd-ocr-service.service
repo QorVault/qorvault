@@ -1,0 +1,48 @@
+# BoardDocs OCR Extraction Service
+# ------------------------------------------------------------------
+# Runs the FastAPI OCR service that extracts text from PDFs using
+# Docling + RapidOCR (ONNX, CPU-only). Uses subprocess isolation to
+# prevent zombie thread memory leaks from hung OCR operations.
+#
+# Install to: ~/.config/systemd/user/ksd-ocr-service.service
+#
+# GPU isolation:
+#   CUDA_VISIBLE_DEVICES= and HIP_VISIBLE_DEVICES= hide the GPU
+#   entirely.  This is required on hosts where the integrated GPU
+#   driver crashes the inference runtime; CPU is the safe default.
+#   Docling auto-selects GPU if visible, so it must be hidden.
+#
+# Enable and start:
+#   systemctl --user daemon-reload
+#   systemctl --user enable ksd-ocr-service
+#   systemctl --user start ksd-ocr-service
+#
+# Verify:
+#   curl http://localhost:8001/stats
+# ------------------------------------------------------------------
+
+[Unit]
+Description=BoardDocs OCR Extraction Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/qorvault/projects/ksd-boarddocs-rag/ocr_service
+ExecStart=/home/qorvault/projects/ksd-boarddocs-rag/ocr_service/.venv/bin/uvicorn \
+    ocr_service.main:app \
+    --host 127.0.0.1 \
+    --port 8001 \
+    --workers 1
+
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=HIP_VISIBLE_DEVICES=
+Environment=HF_HOME=/home/qorvault/models/surya
+
+Restart=on-failure
+RestartSec=30s
+
+StandardOutput=append:/home/qorvault/projects/ksd-boarddocs-rag/logs/ocr_service.log
+StandardError=append:/home/qorvault/projects/ksd-boarddocs-rag/logs/ocr_service.log
+
+[Install]
+WantedBy=default.target

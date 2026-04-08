@@ -1,0 +1,23 @@
+[Unit]
+Description=BoardDocs OCR Extraction Service
+After=network.target
+
+[Service]
+Type=simple
+User=qorvault
+WorkingDirectory=/home/qorvault/projects/ksd-boarddocs-rag/ocr_service
+ExecStart=/home/qorvault/projects/ksd-boarddocs-rag/ocr_service/.venv/bin/uvicorn \
+    ocr_service.main:app \
+    --host 127.0.0.1 \
+    --port 8001 \
+    --workers 1
+
+Environment=HSA_ENABLE_SDMA=0
+Environment=HIP_VISIBLE_DEVICES=0
+Environment=HF_HOME=/home/qorvault/models/surya
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

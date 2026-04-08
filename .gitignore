@@ -1,0 +1,84 @@
+# Environment files containing secrets
+.env
+.env.*
+*.key
+*.pem
+secrets/
+.claude/settings.local.json
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Logs
+*.log
+logs/sessions/*.log
+logs/filesystem_events.jsonl
+logs/audit_parsed.jsonl
+logs/aggregator_cursor.json
+logs/sessions/.active_session
+
+# Data directories (too large for git)
+data/
+input/
+output/
+
+# Large OSPI/research data files (re-downloadable via scripts)
+research/ospi_data/*.json
+research/kent_school_data/
+
+# Manual extraction PDFs (too large for GitHub, stored locally)
+manual_extraction/
+
+# Node
+node_modules/
+
+# Editor files
+.vscode/
+.idea/
+
+# ONNX model cache (too large, re-downloadable)
+model_cache/
+
+# Model files (too large for Git, re-downloadable)
+*.gguf
+*.bin
+
+# Database backups (too large for Git, kept on a separate backup target)
+backups/
+
+# Test artifacts
+test_*.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+.claude/approved-packages.txt
+
+# Deduplication analysis/deletion logs (too large for git)
+scripts/dedup_analysis.json
+scripts/dedup_deletions.json
+
+# Claude Code working directories at any depth
+**/.claude/
+
+# Session log directory (replayable terminal sessions)
+logs/sessions/
+
+# Lint and test caches
+.ruff_cache/
+.pytest_cache/
+
+# Binary model and runtime artifacts
+*.bin
+
+# RAG API runtime log
+rag-api.log

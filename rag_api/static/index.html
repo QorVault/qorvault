@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QorVault — Kent School District Civic Intelligence Platform</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f8f9fa;
+  --surface: #ffffff;
+  --surface-alt: #f1f3f5;
+  --border: #dee2e6;
+  --border-light: #e9ecef;
+  --text: #212529;
+  --text-secondary: #6c757d;
+  --text-muted: #adb5bd;
+  --accent: #2b5797;
+  --accent-hover: #1e3f6f;
+  --accent-light: #e8eef6;
+  --score-bar: #2b5797;
+  --error-bg: #fff5f5;
+  --error-border: #e03131;
+  --error-text: #c92a2a;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-lg: 0 4px 12px rgba(0,0,0,0.1);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+}
+
+html { font-size: 16px; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* --- Header --- */
+.header {
+  background: var(--accent);
+  color: #fff;
+  padding: 1.25rem 1.5rem;
+  box-shadow: var(--shadow-lg);
+}
+.header-inner {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.header .subtitle {
+  font-size: 0.85rem;
+  opacity: 0.85;
+  font-weight: 400;
+  margin-top: 0.15rem;
+}
+
+/* --- Main container --- */
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* --- Search --- */
+.search-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.search-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.search-input {
+  flex: 1;
+  font-family: var(--font);
+  font-size: 1rem;
+  padding: 0.7rem 1rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.search-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+.search-btn {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0.7rem 1.5rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.search-btn:hover { background: var(--accent-hover); }
+.search-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* --- Advanced options --- */
+.advanced-toggle {
+  display: inline-block;
+  margin-top: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  border: none;
+  background: none;
+  font-family: var(--font);
+  padding: 0;
+}
+.advanced-toggle:hover { color: var(--accent); }
+.advanced-panel {
+  display: none;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-light);
+}
+.advanced-panel.open { display: block; }
+.opts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+.opt-group label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.opt-group input, .opt-group select {
+  width: 100%;
+  font-family: var(--font);
+  font-size: 0.9rem;
+  padding: 0.45rem 0.6rem;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  outline: none;
+}
+.opt-group input:focus, .opt-group select:focus {
+  border-color: var(--accent);
+}
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.slider-row input[type=range] { flex: 1; }
+.slider-val {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 1.5rem;
+  text-align: center;
+}
+
+/* --- Loading --- */
+.loading {
+  display: none;
+  text-align: center;
+  padding: 3rem 1rem;
+}
+.loading.visible { display: block; }
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 1rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+.loading-elapsed {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+/* --- Results --- */
+.results { display: none; }
+.results.visible { display: block; }
+
+.answer-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+.answer-card h2, .answer-card h3, .answer-card h4 {
+  margin: 1.25rem 0 0.5rem;
+  font-weight: 600;
+}
+.answer-card h2 { font-size: 1.2rem; }
+.answer-card h3 { font-size: 1.05rem; }
+.answer-card h4 { font-size: 0.95rem; }
+.answer-card h2:first-child, .answer-card h3:first-child { margin-top: 0; }
+.answer-card p { margin: 0.5rem 0; }
+.answer-card ul, .answer-card ol {
+  margin: 0.5rem 0 0.5rem 1.5rem;
+}
+.answer-card li { margin: 0.25rem 0; }
+.answer-card table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+.answer-card th, .answer-card td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+}
+.answer-card th {
+  background: var(--surface-alt);
+  font-weight: 600;
+}
+.answer-card strong { font-weight: 600; }
+
+/* Source reference links in the answer text */
+.src-ref {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+  vertical-align: super;
+  line-height: 1;
+  padding: 0 0.1em;
+  cursor: pointer;
+}
+.src-ref:hover {
+  text-decoration: underline;
+}
+
+/* --- Timing bar --- */
+.timing-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0 0;
+  border-top: 1px solid var(--border-light);
+  margin-top: 1rem;
+}
+.timing-bar span { white-space: nowrap; }
+
+/* --- Sources --- */
+.sources-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.25rem;
+}
+.sources-card h3 {
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.75rem;
+}
+.citation {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border-light);
+}
+.citation:first-of-type { border-top: none; padding-top: 0; }
+.cite-num {
+  flex-shrink: 0;
+  width: 1.8rem;
+  height: 1.8rem;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.1rem;
+}
+.cite-body { flex: 1; min-width: 0; }
+.cite-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  word-break: break-word;
+}
+.cite-meta {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+}
+.cite-link {
+  display: inline-block;
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+.cite-link:hover { text-decoration: underline; }
+.cite-score {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+.cite-score-bar {
+  display: inline-block;
+  height: 4px;
+  background: var(--score-bar);
+  border-radius: 2px;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  opacity: 0.5;
+}
+
+/* --- Error --- */
+.error-card {
+  display: none;
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  color: var(--error-text);
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+.error-card.visible { display: block; }
+.error-card strong { display: block; margin-bottom: 0.25rem; }
+
+/* --- Footer disclaimer --- */
+.site-footer {
+  max-width: 900px;
+  margin: 2rem auto 1rem;
+  padding: 0.75rem 1.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* --- Responsive --- */
+@media (max-width: 600px) {
+  .container { padding: 1rem; }
+  .search-row { flex-direction: column; }
+  .search-btn { width: 100%; }
+  .opts-grid { grid-template-columns: 1fr; }
+  .timing-bar { flex-direction: column; gap: 0.15rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <h1>QorVault</h1>
+    <div class="subtitle">Kent School District Civic Intelligence Platform</div>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Search -->
+  <div class="search-card">
+    <form id="search-form" autocomplete="off">
+      <div class="search-row">
+        <input type="text" id="q" class="search-input"
+               placeholder="Ask a question about board meetings, policies, budgets..."
+               autofocus>
+        <button type="submit" id="submit-btn" class="search-btn">Search</button>
+      </div>
+    </form>
+    <button class="advanced-toggle" id="adv-toggle">Advanced options &#9662;</button>
+    <div class="advanced-panel" id="adv-panel">
+      <div class="opts-grid">
+        <div class="opt-group">
+          <label for="date-from">Date from</label>
+          <input type="date" id="date-from">
+        </div>
+        <div class="opt-group">
+          <label for="date-to">Date to</label>
+          <input type="date" id="date-to">
+        </div>
+        <div class="opt-group">
+          <label for="doc-type">Document type</label>
+          <select id="doc-type">
+            <option value="">All</option>
+            <option value="agenda_item">Agenda Items</option>
+            <option value="agenda">Agendas</option>
+            <option value="attachment">Attachments</option>
+          </select>
+        </div>
+        <div class="opt-group">
+          <label for="top-k">Sources (top-k)</label>
+          <div class="slider-row">
+            <input type="range" id="top-k" min="5" max="25" value="10">
+            <span class="slider-val" id="top-k-val">10</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">Searching records and generating answer...</div>
+    <div class="loading-elapsed" id="elapsed"></div>
+  </div>
+
+  <!-- Error -->
+  <div class="error-card" id="error">
+    <strong>Error</strong>
+    <span id="error-msg"></span>
+  </div>
+
+  <!-- Results -->
+  <div class="results" id="results">
+    <div class="answer-card">
+      <div id="answer"></div>
+      <div class="timing-bar" id="timing"></div>
+    </div>
+    <div class="sources-card">
+      <h3 id="sources-heading">Sources</h3>
+      <div id="citations"></div>
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">
+  Queries are logged for system improvement. Each query costs approximately $0.05 in AI processing. Please use thoughtfully.
+</footer>
+
+<script>
+/* ------------------------------------------------------------------ */
+/*  Simple markdown-to-HTML converter                                 */
+/* ------------------------------------------------------------------ */
+function md(text) {
+  // Normalize line endings
+  let s = text.replace(/\r\n/g, '\n');
+
+  // Tables: detect lines with | separators
+  s = s.replace(/((?:^[^\n]*\|[^\n]*\n)+)/gm, function(block) {
+    const rows = block.trim().split('\n');
+    if (rows.length < 2) return block;
+    let html = '<table>';
+    rows.forEach(function(row, i) {
+      // Skip separator row (---|---)
+      if (/^\s*\|?\s*[-:]+[-| :]*$/.test(row)) return;
+      const tag = i === 0 ? 'th' : 'td';
+      const cells = row.split('|').map(function(c) { return c.trim(); }).filter(Boolean);
+      html += '<tr>' + cells.map(function(c) { return '<' + tag + '>' + c + '</' + tag + '>'; }).join('') + '</tr>';
+    });
+    html += '</table>';
+    return html;
+  });
+
+  // Block-level
+  const lines = s.split('\n');
+  let out = '';
+  let inList = false;
+  let listTag = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // Headers
+    const hMatch = line.match(/^(#{1,4})\s+(.*)$/);
+    if (hMatch) {
+      if (inList) { out += '</' + listTag + '>'; inList = false; }
+      const level = hMatch[1].length;
+      out += '<h' + level + '>' + inline(hMatch[2]) + '</h' + level + '>';
+      continue;
+    }
+
+    // Unordered list
+    if (/^\s*[-*]\s+/.test(line)) {
+      if (!inList || listTag !== 'ul') {
+        if (inList) out += '</' + listTag + '>';
+        out += '<ul>'; inList = true; listTag = 'ul';
+      }
+      out += '<li>' + inline(line.replace(/^\s*[-*]\s+/, '')) + '</li>';
+      continue;
+    }
+
+    // Ordered list
+    const olMatch = line.match(/^\s*(\d+)[.)]\s+(.*)/);
+    if (olMatch) {
+      if (!inList || listTag !== 'ol') {
+        if (inList) out += '</' + listTag + '>';
+        out += '<ol>'; inList = true; listTag = 'ol';
+      }
+      out += '<li>' + inline(olMatch[2]) + '</li>';
+      continue;
+    }
+
+    // Close any open list
+    if (inList) { out += '</' + listTag + '>'; inList = false; }
+
+    // Skip empty lines (but don't drop them entirely — they separate paragraphs)
+    if (line.trim() === '') continue;
+
+    // If line already starts with an HTML tag (table output), pass through
+    if (/^\s*</.test(line)) { out += line; continue; }
+
+    // Default: paragraph
+    out += '<p>' + inline(line) + '</p>';
+  }
+  if (inList) out += '</' + listTag + '>';
+  return out;
+}
+
+/* Inline formatting */
+function inline(s) {
+  // Bold **text** or __text__
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  // Italic *text* or _text_ (but not inside words with underscores)
+  s = s.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<em>$1</em>');
+  // Inline code
+  s = s.replace(/`([^`]+?)`/g, '<code>$1</code>');
+  // [Source N] references → clickable superscript anchors
+  s = s.replace(/\[Source\s+(\d+)\]/g, function(_, n) {
+    return '<a class="src-ref" href="#cite-' + n + '" title="Source ' + n + '">[' + n + ']</a>';
+  });
+  // Combined references like [Source 1][Source 3]
+  // (already handled by the single pattern above iterating over each)
+  return s;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Date formatting                                                   */
+/* ------------------------------------------------------------------ */
+function fmtDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    // Parse YYYY-MM-DD without timezone shift
+    const parts = dateStr.split('-');
+    const d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  } catch (e) { return dateStr; }
+}
+
+/* ------------------------------------------------------------------ */
+/*  UI logic                                                          */
+/* ------------------------------------------------------------------ */
+const form = document.getElementById('search-form');
+const qInput = document.getElementById('q');
+const submitBtn = document.getElementById('submit-btn');
+const loadingEl = document.getElementById('loading');
+const elapsedEl = document.getElementById('elapsed');
+const errorEl = document.getElementById('error');
+const errorMsg = document.getElementById('error-msg');
+const resultsEl = document.getElementById('results');
+const answerEl = document.getElementById('answer');
+const timingEl = document.getElementById('timing');
+const citationsEl = document.getElementById('citations');
+const sourcesHeading = document.getElementById('sources-heading');
+const advToggle = document.getElementById('adv-toggle');
+const advPanel = document.getElementById('adv-panel');
+const topKSlider = document.getElementById('top-k');
+const topKVal = document.getElementById('top-k-val');
+
+// Advanced panel toggle
+advToggle.addEventListener('click', function() {
+  const open = advPanel.classList.toggle('open');
+  advToggle.innerHTML = open ? 'Advanced options &#9652;' : 'Advanced options &#9662;';
+});
+
+// Slider label
+topKSlider.addEventListener('input', function() {
+  topKVal.textContent = this.value;
+});
+
+// Submit
+form.addEventListener('submit', function(e) {
+  e.preventDefault();
+  const query = qInput.value.trim();
+  if (!query) return;
+  runQuery(query);
+});
+
+async function runQuery(query) {
+  // Reset UI
+  errorEl.classList.remove('visible');
+  resultsEl.classList.remove('visible');
+  loadingEl.classList.add('visible');
+  submitBtn.disabled = true;
+
+  // Elapsed timer
+  const t0 = Date.now();
+  const timer = setInterval(function() {
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    elapsedEl.textContent = secs + 's elapsed';
+  }, 100);
+
+  // Build request body.  enable_routing and rewrite_query are omitted
+  // deliberately: the server-side defaults (False for both) close the
+  // LLM-to-SQL attack surface on the default landing-page query path.
+  // If a caller needs routing or rewriting, they can set the flags
+  // explicitly via the API or an authenticated admin UI.
+  const body = {
+    query: query,
+    top_k: parseInt(topKSlider.value, 10),
+  };
+  const dateFrom = document.getElementById('date-from').value;
+  const dateTo = document.getElementById('date-to').value;
+  const docType = document.getElementById('doc-type').value;
+  if (dateFrom) body.date_from = dateFrom;
+  if (dateTo) body.date_to = dateTo;
+  if (docType) body.document_type = docType;
+
+  try {
+    const resp = await fetch('/api/v1/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    clearInterval(timer);
+
+    if (!resp.ok) {
+      let detail = 'Request failed (' + resp.status + ')';
+      try {
+        const err = await resp.json();
+        detail = err.detail || detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+
+    const data = await resp.json();
+    renderResults(data);
+  } catch (err) {
+    clearInterval(timer);
+    loadingEl.classList.remove('visible');
+    errorMsg.textContent = err.message;
+    errorEl.classList.add('visible');
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+function renderResults(data) {
+  loadingEl.classList.remove('visible');
+
+  // Answer
+  answerEl.innerHTML = md(data.answer);
+
+  // Timing
+  timingEl.innerHTML =
+    '<span>Total: ' + data.latency_seconds + 's</span>' +
+    '<span>Embed: ' + data.embedding_latency_seconds + 's</span>' +
+    '<span>Retrieval: ' + data.retrieval_latency_seconds + 's</span>' +
+    '<span>LLM: ' + data.llm_latency_seconds + 's</span>' +
+    '<span>Sources: ' + data.chunks_retrieved + '</span>' +
+    '<span>Tokens: ' + data.input_tokens + ' in / ' + data.output_tokens + ' out</span>';
+
+  // Citations
+  sourcesHeading.textContent = 'Sources (' + data.citations.length + ')';
+  citationsEl.innerHTML = '';
+  data.citations.forEach(function(c) {
+    const scoreWidth = Math.round(c.relevance_score * 80);
+    const scorePct = (c.relevance_score * 100).toFixed(1);
+
+    let metaParts = [];
+    if (c.meeting_date) metaParts.push(fmtDate(c.meeting_date));
+    if (c.committee_name) metaParts.push(c.committee_name);
+
+    var linkLabels = {
+      'transcript': 'Watch on YouTube &rarr;',
+      'agenda_item': 'View Agenda Item &rarr;',
+      'agenda': 'View Agenda &rarr;',
+      'attachment': 'View Attachment &rarr;'
+    };
+    let linkHtml = '';
+    if (c.source_url) {
+      var linkText = linkLabels[c.document_type] || 'View Source &rarr;';
+      linkHtml = '<a class="cite-link" href="' + escHtml(c.source_url) + '" target="_blank" rel="noopener">' + linkText + '</a>';
+    }
+
+    const html =
+      '<div class="citation" id="cite-' + c.source_number + '">' +
+        '<div class="cite-num">' + c.source_number + '</div>' +
+        '<div class="cite-body">' +
+          '<div class="cite-title">' + escHtml(c.title || 'Untitled') + '</div>' +
+          (metaParts.length ? '<div class="cite-meta">' + metaParts.map(escHtml).join('<span style="color:var(--text-muted)">|</span>') + '</div>' : '') +
+          linkHtml +
+          '<div class="cite-score"><span class="cite-score-bar" style="width:' + scoreWidth + 'px"></span>' + scorePct + '% relevance</div>' +
+        '</div>' +
+      '</div>';
+    citationsEl.insertAdjacentHTML('beforeend', html);
+  });
+
+  resultsEl.classList.add('visible');
+
+  // Scroll answer into view
+  answerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

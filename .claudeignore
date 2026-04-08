@@ -1,0 +1,43 @@
+# Environment files
+.env
+.env.*
+.env.local
+.env.production
+
+# Secrets directories
+secrets/
+**/secrets/
+
+# Certificate and key files
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Credential files
+*credentials*
+*-credentials*
+
+# Database files
+*.sqlite
+
+# Sensitive dot-directories
+.aws/
+.ssh/
+.gnupg/
+
+# Log files (may contain leaked secrets)
+*.log
+
+# Dependency caches
+node_modules/
+__pycache__/
+.venv/
+
+# Encrypted secrets config
+.sops.yaml
+*.enc.yaml
+
+# Age encryption keys
+age-key.txt
+*.age

@@ -61,7 +61,80 @@ def test_query_returns_answer_with_citations(client):
     assert data["model"] == "claude-opus-4-6"
 
 
-def test_query_empty_results_returns_no_info_message(
+def test_query_hybrid_route_uses_retrieval_without_database_sql(
+    client,
+    monkeypatch,
+    mock_hybrid_retriever,
+    sample_chunks,
+):  # noqa: D103
+    """Hybrid route uses retrieval and does not call database SQL."""
+    monkeypatch.setattr(
+        main_module,
+        "classify_query",
+        MagicMock(
+            return_value={
+                "route": "hybrid",
+                "confidence": 0.9,
+                "reasoning": "test hybrid route",
+                "extracted_filters": {"person_names": []},
+            }
+        ),
+    )
+    execute_database_query = AsyncMock()
+    monkeypatch.setattr(main_module, "execute_database_query", execute_database_query)
+
+    resp = client.post("/api/v1/query", json={"query": "Compare budget topics over time"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    execute_database_query.assert_not_called()
+    mock_hybrid_retriever.search.assert_awaited_once()
+    assert data["chunks_retrieved"] == len(sample_chunks)
+    assert len(data["citations"]) == len(sample_chunks)
+    assert data["citations"][0]["chunk_id"] == sample_chunks[0].chunk_id
+    assert data["routing_decision"]["route"] == "hybrid"
+
+
+def test_query_database_route_calls_database_sql_and_skips_retrieval(
+    client,
+    monkeypatch,
+    mock_hybrid_retriever,
+):  # noqa: D103
+    """Database route calls SQL handling and skips hybrid retrieval."""
+    monkeypatch.setattr(
+        main_module,
+        "classify_query",
+        MagicMock(
+            return_value={
+                "route": "database",
+                "confidence": 0.9,
+                "reasoning": "test database route",
+                "extracted_filters": {},
+            }
+        ),
+    )
+    execute_database_query = AsyncMock(
+        return_value={
+            "answer": "Database answer",
+            "sql_used": "SELECT 1",
+            "row_count": 1,
+        }
+    )
+    monkeypatch.setattr(main_module, "execute_database_query", execute_database_query)
+
+    resp = client.post("/api/v1/query", json={"query": "How many meetings were held?"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    execute_database_query.assert_awaited_once()
+    mock_hybrid_retriever.search.assert_not_called()
+    assert data["answer"] == "Database answer"
+    assert data["citations"] == []
+    assert data["chunks_retrieved"] == 0
+    assert data["routing_decision"]["route"] == "database"
+
+
+def test_query_empty_results_returns_no_info_message(  # noqa: D103
     mock_embedder,
     mock_db_pool,
 ):

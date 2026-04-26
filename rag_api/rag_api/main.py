@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import Settings
-from .database_handler import execute_database_query, execute_scoped_database_query
+from .database_handler import execute_database_query
 from .embedder import Embedder
 from .hybrid_retriever import HybridRetriever
 from .keyword_retriever import KeywordRetriever
@@ -348,21 +348,6 @@ async def query(request: QueryRequest):
     # 3. Build prompt
     context = build_context_block(chunks)
 
-    # 3a. Hybrid route: add scoped database results to context
-    if route == "hybrid":
-        doc_ids = list({chunk.document_id for chunk in chunks})
-        try:
-            db_extra = await execute_scoped_database_query(
-                db_pool,
-                request.query,
-                llm_client._client,
-                routing_decision.get("extracted_filters", {}),
-                doc_ids,
-            )
-            if db_extra:
-                context += db_extra
-        except Exception as exc:
-            logger.warning("Hybrid database query failed: %s", exc)
     user_message = build_user_message(request.query, context)
 
     # 4. Call LLM

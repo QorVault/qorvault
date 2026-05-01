@@ -5,9 +5,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
-
+import pytest_asyncio
 import rag_api.main as main_module
 
 
@@ -16,30 +16,63 @@ async def _null_lifespan(app):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _inline_to_thread(monkeypatch):
+    """Avoid local Python 3.14 threadpool deadlocks during API tests."""
+
+    async def _run_inline(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(main_module.asyncio, "to_thread", _run_inline)
+
+
 @pytest.fixture
-def client(mock_embedder, mock_retriever, mock_llm_client, mock_db_pool):
-    """Create a TestClient with mocked dependencies via monkeypatching."""
-    # Save originals
+def mock_hybrid_retriever(sample_chunks):
+    """Mock async hybrid retriever used by query route tests."""
+    hybrid = MagicMock()
+    hybrid.search = AsyncMock(return_value=sample_chunks)
+    return hybrid
+
+
+@asynccontextmanager
+async def _test_client():
+    transport = httpx.ASGITransport(
+        app=main_module.app,
+        raise_app_exceptions=False,
+    )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as async_client:
+        yield async_client
+
+
+@pytest_asyncio.fixture
+async def client(mock_embedder, mock_retriever, mock_hybrid_retriever, mock_llm_client, mock_db_pool):
+    """Create an AsyncClient with mocked dependencies via monkeypatching."""
     orig_embedder = main_module.embedder
     orig_retriever = main_module.retriever
+    orig_hybrid = main_module.hybrid_retriever
     orig_llm = main_module.llm_client
     orig_pool = main_module.db_pool
 
-    # Replace globals
     main_module.embedder = mock_embedder
     main_module.retriever = mock_retriever
+    main_module.hybrid_retriever = mock_hybrid_retriever
     main_module.llm_client = mock_llm_client
     main_module.db_pool = mock_db_pool
 
     main_module.app.router.lifespan_context = _null_lifespan
 
-    yield TestClient(main_module.app, raise_server_exceptions=False)
-
-    # Restore
-    main_module.embedder = orig_embedder
-    main_module.retriever = orig_retriever
-    main_module.llm_client = orig_llm
-    main_module.db_pool = orig_pool
+    try:
+        async with _test_client() as async_client:
+            yield async_client
+    finally:
+        main_module.embedder = orig_embedder
+        main_module.retriever = orig_retriever
+        main_module.hybrid_retriever = orig_hybrid
+        main_module.llm_client = orig_llm
+        main_module.db_pool = orig_pool
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +80,9 @@ def client(mock_embedder, mock_retriever, mock_llm_client, mock_db_pool):
 # ---------------------------------------------------------------------------
 
 
-def test_query_returns_answer_with_citations(client):
-    resp = client.post("/api/v1/query", json={"query": "What policies were approved?"})
+@pytest.mark.asyncio
+async def test_query_returns_answer_with_citations(client):  # noqa: D103
+    resp = await client.post("/api/v1/query", json={"query": "What policies were approved?"})
 
     assert resp.status_code == 200
     data = resp.json()
@@ -61,7 +95,8 @@ def test_query_returns_answer_with_citations(client):
     assert data["model"] == "claude-opus-4-6"
 
 
-def test_query_hybrid_route_uses_retrieval_without_database_sql(
+@pytest.mark.asyncio
+async def test_query_hybrid_route_uses_retrieval_without_database_sql(
     client,
     monkeypatch,
     mock_hybrid_retriever,
@@ -83,7 +118,10 @@ def test_query_hybrid_route_uses_retrieval_without_database_sql(
     execute_database_query = AsyncMock()
     monkeypatch.setattr(main_module, "execute_database_query", execute_database_query)
 
-    resp = client.post("/api/v1/query", json={"query": "Compare budget topics over time"})
+    resp = await client.post(
+        "/api/v1/query",
+        json={"query": "Compare budget topics over time", "enable_routing": True},
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -95,7 +133,8 @@ def test_query_hybrid_route_uses_retrieval_without_database_sql(
     assert data["routing_decision"]["route"] == "hybrid"
 
 
-def test_query_database_route_calls_database_sql_and_skips_retrieval(
+@pytest.mark.asyncio
+async def test_query_database_route_calls_database_sql_and_skips_retrieval(
     client,
     monkeypatch,
     mock_hybrid_retriever,
@@ -122,7 +161,10 @@ def test_query_database_route_calls_database_sql_and_skips_retrieval(
     )
     monkeypatch.setattr(main_module, "execute_database_query", execute_database_query)
 
-    resp = client.post("/api/v1/query", json={"query": "How many meetings were held?"})
+    resp = await client.post(
+        "/api/v1/query",
+        json={"query": "How many meetings were held?", "enable_routing": True},
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -134,28 +176,32 @@ def test_query_database_route_calls_database_sql_and_skips_retrieval(
     assert data["routing_decision"]["route"] == "database"
 
 
-def test_query_empty_results_returns_no_info_message(  # noqa: D103
+@pytest.mark.asyncio
+async def test_query_empty_results_returns_no_info_message(  # noqa: D103
     mock_embedder,
     mock_db_pool,
 ):
     mock_ret = MagicMock()
-    mock_ret.search.return_value = []
+    mock_hybrid = MagicMock()
+    mock_hybrid.search = AsyncMock(return_value=[])
     mock_llm = MagicMock()
 
     orig_embedder = main_module.embedder
     orig_retriever = main_module.retriever
+    orig_hybrid = main_module.hybrid_retriever
     orig_llm = main_module.llm_client
     orig_pool = main_module.db_pool
 
     main_module.embedder = mock_embedder
     main_module.retriever = mock_ret
+    main_module.hybrid_retriever = mock_hybrid
     main_module.llm_client = mock_llm
     main_module.db_pool = mock_db_pool
     main_module.app.router.lifespan_context = _null_lifespan
 
     try:
-        tc = TestClient(main_module.app, raise_server_exceptions=False)
-        resp = tc.post("/api/v1/query", json={"query": "Something obscure?"})
+        async with _test_client() as async_client:
+            resp = await async_client.post("/api/v1/query", json={"query": "Something obscure?"})
 
         assert resp.status_code == 200
         data = resp.json()
@@ -166,22 +212,26 @@ def test_query_empty_results_returns_no_info_message(  # noqa: D103
     finally:
         main_module.embedder = orig_embedder
         main_module.retriever = orig_retriever
+        main_module.hybrid_retriever = orig_hybrid
         main_module.llm_client = orig_llm
         main_module.db_pool = orig_pool
 
 
-def test_query_validates_empty_query(client):
-    resp = client.post("/api/v1/query", json={"query": ""})
+@pytest.mark.asyncio
+async def test_query_validates_empty_query(client):  # noqa: D103
+    resp = await client.post("/api/v1/query", json={"query": ""})
     assert resp.status_code == 422
 
 
-def test_query_validates_top_k_bounds(client):
-    resp = client.post("/api/v1/query", json={"query": "test", "top_k": 100})
+@pytest.mark.asyncio
+async def test_query_validates_top_k_bounds(client):  # noqa: D103
+    resp = await client.post("/api/v1/query", json={"query": "test", "top_k": 100})
     assert resp.status_code == 422
 
 
-def test_query_latency_fields_present(client):
-    resp = client.post("/api/v1/query", json={"query": "test"})
+@pytest.mark.asyncio
+async def test_query_latency_fields_present(client):  # noqa: D103
+    resp = await client.post("/api/v1/query", json={"query": "test"})
 
     assert resp.status_code == 200
     data = resp.json()
@@ -196,8 +246,9 @@ def test_query_latency_fields_present(client):
 # ---------------------------------------------------------------------------
 
 
-def test_health_all_healthy(client):
-    resp = client.get("/api/v1/health")
+@pytest.mark.asyncio
+async def test_health_all_healthy(client):  # noqa: D103
+    resp = await client.get("/api/v1/health")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -216,7 +267,8 @@ class _FailingPoolAcquire:
         return False
 
 
-def test_health_degraded_when_db_down(
+@pytest.mark.asyncio
+async def test_health_degraded_when_db_down(  # noqa: D103
     mock_embedder,
     mock_retriever,
     mock_llm_client,
@@ -238,8 +290,8 @@ def test_health_degraded_when_db_down(
     main_module.app.router.lifespan_context = _null_lifespan
 
     try:
-        tc = TestClient(main_module.app, raise_server_exceptions=False)
-        resp = tc.get("/api/v1/health")
+        async with _test_client() as async_client:
+            resp = await async_client.get("/api/v1/health")
 
         assert resp.status_code == 200
         data = resp.json()

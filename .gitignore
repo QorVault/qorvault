@@ -33,6 +33,8 @@ output/
 
 # Large OSPI/research data files (re-downloadable via scripts)
 research/ospi_data/*.json
+docs/ospi_data/*.json
+docs/ospi_data/download_ospi.py
 research/kent_school_data/
 
 # Manual extraction PDFs (too large for GitHub, stored locally)

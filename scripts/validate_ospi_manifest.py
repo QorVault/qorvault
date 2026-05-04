@@ -104,6 +104,16 @@ class JsonStream:
             self._compact()
             return value
 
+    def require_no_trailing_non_whitespace(self) -> None:
+        """Raise if non-whitespace content remains after a top-level value."""
+        self.skip_whitespace()
+        if self._ensure_available():
+            raise json.JSONDecodeError(
+                "Trailing non-whitespace content after top-level JSON value",
+                self.buffer,
+                self.position,
+            )
+
 
 def build_manifest(corpus_path: str | Path, output_path: str | Path) -> dict[str, Any]:
     """Validate an OSPI corpus directory and write a JSON manifest to output_path."""
@@ -216,8 +226,10 @@ def _inspect_json_file(corpus: Path, path: Path) -> tuple[dict[str, Any], list[d
             _mark_empty(entry, warnings, relative_path)
         elif first_char == "[":
             _inspect_top_level_array(reader, entry, file_id)
+            reader.require_no_trailing_non_whitespace()
         elif first_char == "{":
             _inspect_top_level_object(reader, entry, file_id)
+            reader.require_no_trailing_non_whitespace()
         else:
             value = reader.decode_value()
             entry["top_level_shape"] = type(value).__name__

@@ -189,6 +189,28 @@ def test_malformed_and_empty_json_files_warn_without_aborting(tmp_path: Path) ->
     assert {entry["top_level_shape"] for entry in manifest["files"]} == {"malformed", "empty"}
 
 
+def test_trailing_non_whitespace_after_top_level_json_warns_as_malformed(tmp_path: Path) -> None:
+    """Trailing non-whitespace content after complete JSON values should warn."""
+    validator = load_validator()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "array.json").write_text('[{"a": 1}] trailing-junk', encoding="utf-8")
+    (corpus / "object.json").write_text('{"records": [{"a": 1}]} trailing-junk', encoding="utf-8")
+
+    manifest = validator.build_manifest(corpus, tmp_path / "manifest.json")
+
+    files_by_name = {entry["name"]: entry for entry in manifest["files"]}
+    assert files_by_name["array.json"]["top_level_shape"] == "malformed"
+    assert files_by_name["object.json"]["top_level_shape"] == "malformed"
+    assert files_by_name["array.json"]["record_count"] == 0
+    assert files_by_name["object.json"]["record_count"] == 0
+    assert len(manifest["warnings"]) == 2
+    assert all(
+        "Trailing non-whitespace content after top-level JSON value" in warning["message"]
+        for warning in manifest["warnings"]
+    )
+
+
 def test_checksum_stability_and_no_input_mutation(tmp_path: Path) -> None:
     """Running the validator must not mutate input files or their checksums."""
     validator = load_validator()

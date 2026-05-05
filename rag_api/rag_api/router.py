@@ -29,7 +29,9 @@ Classify the user's question into one of three routes:
    chunks (content, token_count), tenants. document_type is one of: agenda_item, agenda, attachment.
    Examples: "How many meetings were there in 2024?", "List all Budget Committee documents"
 
-3. "hybrid" — Questions needing both semantic search and structured data analysis.
+3. "hybrid" — Retrieval-only semantic search using the hybrid retriever.
+   This route does not add SQL/database context. A true retrieval+database
+   hybrid route is deferred until a separate safety design and review.
    Examples: "What budget topics were discussed most frequently in 2023?",
    "Compare what the superintendent said in January vs June 2025"
 
@@ -41,7 +43,9 @@ Return JSON: {"route": "rag"|"database"|"hybrid", "confidence": 0.0-1.0,
 Rules:
 - Default to "rag" when uncertain
 - "database" only for questions answerable by counting, listing, or filtering metadata
-- "hybrid" when the question needs both semantic content and structured aggregation
+- "hybrid" for retrieval-only semantic questions that benefit from the hybrid retriever
+- Do not use "hybrid" to request SQL/database context; use "database" only when
+  the explicit database path is appropriate
 - Extract any dates, committees, document types, or person names mentioned in the query"""
 
 # ---------------------------------------------------------------------------

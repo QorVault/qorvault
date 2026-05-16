@@ -12,7 +12,7 @@ openpyxl>=3.1.0
 # API framework
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
-pydantic>=2.0
+pydantic>=2.13.3
 
 # Utilities
 psutil>=5.9.0

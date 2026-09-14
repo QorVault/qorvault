@@ -17,7 +17,9 @@
 
 ## What Changed
 
-Three files modified, two created. Nothing else on the host was touched.
+Nothing else on the host was touched.
+
+**Main session:**
 
 | File | Change |
 |---|---|
@@ -27,7 +29,16 @@ Three files modified, two created. Nothing else on the host was touched.
 | `reports/hygiene-2026-09-13.md` | New |
 | `docs/session-logs/session-debrief-2026-09-13-hygiene-remediation.md` | New |
 
-The guarded tree (`ksd-boarddocs-rag`) was read only via `grep`. Its `.env` was not touched. Production was not contacted.
+**Follow-up, on separate operator approvals:**
+
+| File | Change |
+|---|---|
+| `…/framework-backup/…/boarddocs/data/boarddocs_scraper.py` | `chmod a-x`, then **moved** to `~/workspace/archive/legacy-flat-scraper/` |
+| `~/workspace/archive/legacy-flat-scraper/README.md` | New — provenance, hash, incident reference, do-not-run warning |
+| `docs/data-paths.md` | New — canonical data locations and known-stale references |
+| `reports/hygiene-2026-09-13.md` | Addendum A1–A6 appended (append-only; §2 given a `SUPERSEDED` pointer) |
+
+The guarded tree (`ksd-boarddocs-rag`) was read only via `grep`. Its `.env` was not touched. Production was not contacted. The backup corpus received **no new file and no tombstone** — the only change to it was the removal of the scraper.
 
 ## Findings
 
@@ -88,26 +99,28 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 
    Two things this commit does **not** cover. The quadlet change (`~/.config/containers/systemd/civic-postgres.container`) is **outside any git repo** — the loopback fix is unversioned and will be lost by any process that regenerates that file. And the working tree still carries untracked files from prior sessions: `reports/ingest-degradation-2026-09-13.md` and three `docs/session-logs/` debriefs (2026-09-08 ×2, 2026-09-13 ingest diagnostic).
 
-2. **Quarantine or remove the legacy flat scraper — still open.** `.../framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py`, inside the authoritative backup corpus. This is the tool that caused the 71-record incident.
+2. **Legacy flat scraper — CLOSED.** Relocated out of the authoritative corpus on operator approval.
 
-   **`chmod a-x` was applied** at operator request after the main session (`-rwxr-xr-x` → `-rw-r--r--`; SHA-256 `877529ae3e6f3e9f` unchanged, mtime `2026-02-22 07:07:05` preserved, so the forensic timestamp evidence survives).
+   **New path:** `~/workspace/archive/legacy-flat-scraper/boarddocs_scraper.py`
+   **Original path:** `…/framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py`
 
-   **That is not sufficient on its own, and the caveat matters more than the fix.** For a Python script the execute bit only governs the shebang path. Both paths were tested after the change:
+   Same-filesystem rename (btrfs, device `37`, subvol `/root`), so this is the same file rather than a copy. Verified identical before and after:
 
-   | Invocation | Result |
-   |---|---|
-   | `./boarddocs_scraper.py` | blocked |
-   | `python3 boarddocs_scraper.py` | **still runs** |
+   | Property | Before | After |
+   |---|---|---|
+   | SHA-256 | `877529ae3e6f3e9fdb20681a4decee54f5854d482a4a42557e24460e7d20539f` | identical |
+   | mtime | `2026-02-22 07:07:05.409386920 -0800` (epoch `1771772825`) | identical |
+   | inode | `9672210` | identical |
+   | size | 46,461 | identical |
+   | perms | `-rw-r--r--` | identical (non-executable) |
 
-   The realistic way anyone re-runs this — deliberately or by copying a line out of an old shell history — is `python3 <file>`, which is completely unaffected. One vector of two is closed. **Do not read this item as neutralized.**
+   Backup corpus verified clean afterwards: **1,684** meeting directories, **806** `agenda.html`, scraper gone, **no tombstone and no new file** created inside it. `~/workspace/archive/legacy-flat-scraper/README.md` documents original path, hash, mtime, incident reference and the do-not-run warning. `docs/data-paths.md` records the new location.
 
-   The effective remedy is to get the file out of the data directory, since the hazard is that it sits *inside* the 1,684-meeting corpus where tab-completion or a stray `find -exec` reaches it:
-   ```
-   mkdir -p ~/qorvault-dev-archive/legacy-scrapers
-   mv ~/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py \
-      ~/qorvault-dev-archive/legacy-scrapers/boarddocs_scraper.py.DO_NOT_RUN
-   ```
-   Not executed — moving a file inside the backup archive is a larger step than the chmod authorized, and whether that archive stays byte-for-byte as captured is the operator's call.
+   **Checksum manifest: no impact.** The only genuine manifest in the archive (`…/ksd-boarddocs-rag/backups/2026-04-03/manifest.json`) is a 228-character database backup summary — `timestamp`, `postgres_dump_size_bytes`, `qdrant_snapshot_size_bytes`, and document/chunk/vector counts. It contains no file paths and no reference to the scraper or the data tree, so **this move invalidates nothing.** Not edited. All other `*manifest*`/`*checksum*` hits under the backup tree are Chromium and pip cache artefacts, unrelated to the corpus.
+
+   **Left in place deliberately: `boarddocs_scraper.log`**, still at the original location, now the only top-level file in that data directory. It is the run log of the incident, carries no execution risk, and moving it was outside the approval. Recommend deciding whether it should follow the scraper into the archive — see Open Item 11 for why it is now more valuable than it looked.
+
+   Retained for the record: `chmod a-x` alone (applied earlier) was **not** sufficient — `./boarddocs_scraper.py` was blocked but `python3 boarddocs_scraper.py` still ran. Relocation, not the permission bit, is what closed this.
 
 3. **Guarded-tree `.env` — operator edit required.** `~/workspace/projects/ksd-boarddocs-rag/.env` was not touched, per instruction. If it carries the same mismatched credential, host-side tooling there still cannot authenticate. The working value is in the container environment and in `civic-postgres.container`. Compare without printing:
    ```
@@ -185,3 +198,25 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 9. **Hook coverage gap.** `~/.claude/hooks/block-dangerous-commands.sh` blocks `cat|head|tail|less|more|base64|xxd` against `.env`/`.pem`/`.key`, but not `sed`, `awk`, `python3`, `sort`, or `grep`. A rule keyed on the target file extension regardless of reading tool would close it. Hook not modified.
 
 10. **Rename the quadlet for clarity.** `civic-postgres.container` creates a container named `boarddocs-postgres`. Same mismatch likely exists for `civic-qdrant.container` → `boarddocs-qdrant`. Cosmetic, but it costs search time during an incident.
+
+11. **NEW — the 2026-02-22 run was far larger than the diagnostic records. Recommend a correction to `reports/ingest-degradation-2026-09-13.md`.**
+
+    Found while writing the archive README, from the scraper's own run log.
+
+    §0.2 of the diagnostic dates the run to **2026-02-22 07:02–07:05** — inferred from the mtimes of the four affected 2026 meeting directories — and frames it as "a second, older scraper was run against 2026 meetings." The log shows otherwise:
+
+    ```
+    first: 2026-02-22 06:43:20   last: 2026-02-22 11:19:07
+    9,126 lines / 2.2 MB / 806 distinct meeting slugs
+    ```
+
+    **A 4.5-hour run across 806 meetings, not a 3-minute run across four.** Slug years: 2005–2017 heavily, 2018 × 30, 2026 × 9.
+
+    Corroborated independently by the corpus. `agenda.html` retention is unique to this scraper, and the corpus holds **806** `agenda.html` files whose year distribution matches the log **exactly, year for year** (2018 → 30, 2026 → 9), with **all 806 carrying mtime `2026-02-22`**. Conclusion: **every `agenda.html` in the corpus was written by this single run** — they are not survivors of a historic flat-scraper era, as §0.2's retention table implies.
+
+    Two consequences:
+
+    - **The 71-record damage figure still stands.** 2005–2018 meetings were *already* flat in the corpus, so the flat `external_id` matched and `ON CONFLICT DO NOTHING` made those a genuine no-op. Collision required a meeting previously scraped *structured*, which in practice meant 2026 only. Wider blast radius, same record count.
+    - **R1 and R4 Route 2 depend on this run's output.** Both parse `agenda.html` from `documents.content_raw`, and that HTML came from this scraper on 2026-02-22. Recovery remains sound — one consistent snapshot of intact BoardDocs markup — but it is **not an independent source**, and any systematic flaw in this run's capture is inherited by all 806. Worth a sampled spot-check against live BoardDocs before R4 goes bulk, folded into the 5 URL confirmations already gated on R4.
+
+    Per the project's append-only convention, publish as a correction rather than editing §0.2. Not written — this is a finding, not an authorised edit to a prior report.

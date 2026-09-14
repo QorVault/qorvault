@@ -35,7 +35,9 @@ The guarded tree (`ksd-boarddocs-rag`) was read only via `grep`. Its `.env` was 
 
 Two consequences worth separating. First, **the overwritten 32-character value is gone from this host** — no backup was made (correctly). It survives only wherever it was originally issued. Second, **the working credential is 13 characters and sits in plaintext in the quadlet unit file** (`Environment=POSTGRES_PASSWORD=`). Until this session it was also LAN-reachable. Fixing the bind address does not fix the credential.
 
-**2. The bind address was exactly as reported, and the firewall question could not be answered.** `ss -ltnp` showed `*:5432` before the change and `127.0.0.1:5432` after, with an explicit wildcard test passing. The container is healthy, `select 1` still works, and `count(*) from documents` returns 20,197 — data intact. But `firewall-cmd --state` and `--list-ports` both returned `Authorization failed` (root required, no sudo this session), so **whether the LAN could actually reach 5432 is still unknown**. The fix is correct regardless; the size of the exposure window is not established.
+**2. The bind address was exactly as reported. The firewall question was open at time of writing and has since been closed — there was no exposure window.** `ss -ltnp` showed `*:5432` before the change and `127.0.0.1:5432` after, with an explicit wildcard test passing. The container is healthy, `select 1` still works, and `count(*) from documents` returns 20,197 — data intact. During the session `firewall-cmd --state` and `--list-ports` both returned `Authorization failed` (root required, no sudo), so the exposure window could not be sized from inside the session.
+
+**Resolved post-session:** the operator ran `firewall-cmd --list-all` in a terminal — zone `FedoraServer`, ports empty, services `ssh`/`cockpit`/`dhcpv6-client` only, rootless container. **5432/tcp was never permitted inbound**, so the `0.0.0.0` publish was a socket-layer exposure only. Classification: **latent misconfiguration corrected during routine hygiene, not a security incident.** Full evidence and the two independent corroborating facts (point-to-point /30 segment; firewalld continuously active) are in Open Item 5, along with the one thing this does not establish — that the verdict rests on firewall policy, not on connection records, because none exist.
 
 The unit is named `civic-postgres.container` / `civic-postgres.service` while the container it creates is `boarddocs-postgres`. Grepping for a `boarddocs-postgres` unit finds nothing. Not changed, but it cost time here and will cost it again.
 
@@ -86,7 +88,26 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 
    Two things this commit does **not** cover. The quadlet change (`~/.config/containers/systemd/civic-postgres.container`) is **outside any git repo** — the loopback fix is unversioned and will be lost by any process that regenerates that file. And the working tree still carries untracked files from prior sessions: `reports/ingest-degradation-2026-09-13.md` and three `docs/session-logs/` debriefs (2026-09-08 ×2, 2026-09-13 ingest diagnostic).
 
-2. **Quarantine or remove the legacy flat scraper — highest priority.** `.../framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py`, `-rwxr-xr-x`, inside the authoritative backup corpus. Suggested minimum: `chmod a-x`. Better: move it out of the data directory into a clearly-marked `legacy/` path so it cannot be run by autocomplete or a stray `find -exec`. This is the tool that caused the 71-record incident and nothing currently prevents a repeat.
+2. **Quarantine or remove the legacy flat scraper — still open.** `.../framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py`, inside the authoritative backup corpus. This is the tool that caused the 71-record incident.
+
+   **`chmod a-x` was applied** at operator request after the main session (`-rwxr-xr-x` → `-rw-r--r--`; SHA-256 `877529ae3e6f3e9f` unchanged, mtime `2026-02-22 07:07:05` preserved, so the forensic timestamp evidence survives).
+
+   **That is not sufficient on its own, and the caveat matters more than the fix.** For a Python script the execute bit only governs the shebang path. Both paths were tested after the change:
+
+   | Invocation | Result |
+   |---|---|
+   | `./boarddocs_scraper.py` | blocked |
+   | `python3 boarddocs_scraper.py` | **still runs** |
+
+   The realistic way anyone re-runs this — deliberately or by copying a line out of an old shell history — is `python3 <file>`, which is completely unaffected. One vector of two is closed. **Do not read this item as neutralized.**
+
+   The effective remedy is to get the file out of the data directory, since the hazard is that it sits *inside* the 1,684-meeting corpus where tab-completion or a stray `find -exec` reaches it:
+   ```
+   mkdir -p ~/qorvault-dev-archive/legacy-scrapers
+   mv ~/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py \
+      ~/qorvault-dev-archive/legacy-scrapers/boarddocs_scraper.py.DO_NOT_RUN
+   ```
+   Not executed — moving a file inside the backup archive is a larger step than the chmod authorized, and whether that archive stays byte-for-byte as captured is the operator's call.
 
 3. **Guarded-tree `.env` — operator edit required.** `~/workspace/projects/ksd-boarddocs-rag/.env` was not touched, per instruction. If it carries the same mismatched credential, host-side tooling there still cannot authenticate. The working value is in the container environment and in `civic-postgres.container`. Compare without printing:
    ```
@@ -97,12 +118,70 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 
 4. **Hard-coded path references — operator edits, 11 sites.** Listed with file:line in `reports/hygiene-2026-09-13.md` §3.1. Four are in the guarded tree (`boarddocs_loader/config.py:29`, `README.md:23` and `:35`, `CLAUDE.md:19`), four in `ksd-main` (same four files, `/home/qorvault/` variant), three in `ksd_forensic/scripts/` (`boarddocs_api_scrape.py:36`, `boarddocs_update.py:52`, `load_scraped_meetings.py:24`). **None currently resolves.** Decide the canonical data path first — most likely the 1,684-meeting backup — then correct all eleven together, and correct the "1,682 meetings" claim in both `CLAUDE.md` files at the same time.
 
-5. **Answer the firewall question.** Needs root: `sudo firewall-cmd --list-ports` and `sudo firewall-cmd --list-all` on Smeltor. Determines whether the corpus was actually LAN-reachable before today's fix, which decides whether this was a latent misconfiguration or an actual exposure worth treating as an incident.
+5. **Firewall question — CLOSED. Verdict: latent misconfiguration, no exposure window.**
 
-6. **Rotate the database credential, and get it out of the unit file.** 13 characters in plaintext in `civic-postgres.container`. Rotating means changing it in the container, the quadlet, and both `.env` files together. Consider `Environment=POSTGRES_PASSWORD` sourced from a root-only `EnvironmentFile=` rather than inline in the unit.
+   Operator ran `firewall-cmd --list-all` in a terminal (root required; `/etc/firewalld` is `drwxr-x--- root root` and there is no non-root read path). Result:
 
-7. **LAN clients will now fail.** If anything off-host was connecting to 5432 — the Framework Desktop is the obvious candidate — it is disconnected by design as of this session. Nothing was connected at change time, so nothing in flight broke, but an intermittent or scheduled client will fail on its next run. The correct fix is an SSH tunnel, not reverting the bind. Rollback if genuinely needed: set `PublishPort=0.0.0.0:5432:5432`, `systemctl --user daemon-reload`, restart.
+   | Property | Value |
+   |---|---|
+   | Zone | `FedoraServer` |
+   | Interfaces | `enp9s0`, `enp10s0` |
+   | Ports | *(empty)* |
+   | Services | `ssh`, `cockpit`, `dhcpv6-client` |
+   | Container | rootless |
 
-8. **Hook coverage gap.** `~/.claude/hooks/block-dangerous-commands.sh` blocks `cat|head|tail|less|more|base64|xxd` against `.env`/`.pem`/`.key`, but not `sed`, `awk`, `python3`, `sort`, or `grep`. A rule keyed on the target file extension regardless of reading tool would close it. Hook not modified.
+   **5432/tcp was never permitted inbound.** The `0.0.0.0` publish exposed the port at the socket layer only; firewalld dropped inbound traffic to it on both interfaces for the entire period. This is a **latent misconfiguration corrected during routine hygiene, not a security incident.** No exposure window, no scope question, no notification consideration.
 
-9. **Rename the quadlet for clarity.** `civic-postgres.container` creates a container named `boarddocs-postgres`. Same mismatch likely exists for `civic-qdrant.container` → `boarddocs-qdrant`. Cosmetic, but it costs search time during an incident.
+   Two supporting facts, gathered without root, that independently narrow the same conclusion:
+
+   - **The segment is point-to-point, not a LAN.** Smeltor is `10.10.3.2/30` on `enp10s0`, default route via `10.10.3.1`. A /30 carries exactly two usable addresses, so there is precisely **one** possible on-segment neighbour — the gateway. The phrasing "the corpus is reachable from the LAN" in `reports/ingest-degradation-2026-09-13.md`, repeated in `reports/hygiene-2026-09-13.md` §2, **overstates the topology** and should be read with this correction. Any reach would have required deliberate routing by `10.10.3.1`.
+   - **firewalld ran continuously.** `active` and `enabled`, with a clean start at boot on 2026-09-08 in the journal. No window where the service was stopped.
+
+   `enp9s0` is in the same zone but carried no address at audit time (`ip -br addr` showed only `enp10s0` up). Same policy applies if it is ever brought up — no action needed.
+
+   **The one thing this does not close: there is no connection record, and there never was.** The verdict above rests on firewall policy, not on observed traffic. Postgres logging is configured such that a successful off-host connection would have left no trace at all:
+
+   ```
+   log_connections    | off
+   log_disconnections | off
+   log_line_prefix    | %m [%p]      <- no %h, so no client address
+   listen_addresses   | *
+   ssl                | off
+   ```
+
+   Four `password authentication failed for user "boarddocs"` entries exist in the journal (2026-09-08 ×2, 2026-09-13 19:20 and 20:30). They align exactly with the known `.env` credential mismatch — two in the Sep 8 smoke-test session, two in the Sep 13 diagnostic session, which documented its failed host-side attempt in its own appendix. That is the innocent explanation and it fits the timeline. **It is not proof**, because without `%h` a local failure is indistinguishable from a remote one. The firewall policy is what makes the verdict safe; the logs could not have supported it either way.
+
+   Also noted from the same query, neither urgent given the corrected bind: `ssl = off` (traffic unencrypted in transit — low impact for public meeting records), and `listen_addresses = *` inside the container, meaning Postgres itself offers no second line of defence if the `PublishPort` line is ever reverted.
+
+6. **Recommended change (NOT executed) — enable connection logging so this is answerable from logs next time.**
+
+   The gap above is the real lesson from this item: the reachability question had to be settled by reading firewall policy because no connection record existed. Closing that gap costs one restart.
+
+   In `~/.config/containers/systemd/civic-postgres.container`, pass the settings to the server process:
+
+   ```ini
+   [Container]
+   Exec=postgres -c log_connections=on \
+                 -c log_disconnections=on \
+                 -c "log_line_prefix=%%m [%%p] %%h %%u@%%d "
+   ```
+
+   **The doubled `%%` is required and is the easy thing to get wrong.** systemd treats `%` as a specifier prefix in unit files, so a literal `%m` is consumed by systemd before Postgres ever sees it and the prefix silently comes out malformed. Quadlet files are unit files. If the escaping proves awkward, the alternative is a mounted `postgresql.conf` fragment via `Volume=` plus `-c config_file=`, which avoids systemd's parser entirely — slightly more moving parts, no escaping trap.
+
+   `%h` is the field that was missing and the reason the four auth failures are uninterpretable. Consider `log_disconnections` optional; `log_connections` plus `%h` is the minimum that makes a future "who connected?" answerable.
+
+   **Before applying:** this needs a container restart, so the same stop-rule from Step 2 applies — check `pg_stat_activity` for connections other than your own first, and do not restart while anything is writing. Verify afterward with `SELECT name, setting FROM pg_settings WHERE name IN ('log_connections','log_line_prefix');` rather than assuming the quadlet took effect.
+
+   Not executed: modifying Postgres server configuration is outside the scope authorized for this session, which was `.env`, the `PublishPort` line, and the data tree.
+
+7. **Rotate the database credential, and get it out of the unit file.** 13 characters in plaintext in `civic-postgres.container`. Rotating means changing it in the container, the quadlet, and both `.env` files together. Consider `Environment=POSTGRES_PASSWORD` sourced from a root-only `EnvironmentFile=` rather than inline in the unit.
+
+   Priority note: this was the sharpest item while the bind looked exposed. With Open Item 5 closed — firewalld never permitted 5432 inbound — a short plaintext credential on a loopback-only, rootless container is a hygiene item, not an urgent one. Still worth doing on the next maintenance pass.
+
+8. **~~LAN clients will now fail.~~ Resolved by the Open Item 5 evidence — no action needed.** This was raised on the assumption that something off-host might have been using 5432 and would break when the bind moved to loopback. The firewall verdict removes the premise: if 5432 was never permitted inbound, **no off-host client could have been connecting in the first place**, so the bind change cannot have broken one. Consistent with the pre-restart check, which found only this session's own backend. Retained rather than deleted so the reasoning is visible.
+
+   If a LAN client is ever *wanted*, the correct mechanism is an SSH tunnel, not reverting `PublishPort`.
+
+9. **Hook coverage gap.** `~/.claude/hooks/block-dangerous-commands.sh` blocks `cat|head|tail|less|more|base64|xxd` against `.env`/`.pem`/`.key`, but not `sed`, `awk`, `python3`, `sort`, or `grep`. A rule keyed on the target file extension regardless of reading tool would close it. Hook not modified.
+
+10. **Rename the quadlet for clarity.** `civic-postgres.container` creates a container named `boarddocs-postgres`. Same mismatch likely exists for `civic-qdrant.container` → `boarddocs-qdrant`. Cosmetic, but it costs search time during an incident.

@@ -74,14 +74,17 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 
 ## Open Items
 
-1. **Commit is pending operator action.** Nothing was committed this session. To commit:
+1. **Commit succeeded — no operator action needed.** Committed as `9dff46c` on `claude/feat-facts-marks`* with only this session's two files staged:
    ```
-   cd ~/workspace/projects/ksd-main
    git add reports/hygiene-2026-09-13.md \
            docs/session-logs/session-debrief-2026-09-13-hygiene-remediation.md
    git commit -m "docs: close four hygiene items (credential, bind address, data tree quarantine)"
    ```
-   Note the quadlet change (`~/.config/containers/systemd/civic-postgres.container`) is **outside any git repo** and will not be captured by that commit. The working tree also still carries the untracked files from prior sessions: `reports/ingest-degradation-2026-09-13.md` and three `docs/session-logs/` debriefs (2026-09-08 ×2, 2026-09-13 ingest diagnostic).
+   All pre-commit hooks passed, including `detect private key` and `Detect hardcoded secrets` — independent confirmation that no credential leaked into the report or this debrief. **The signing-identity gap from the Part 1 session is confirmed fixed**: `git log --show-signature` reports `Good "git" signature for donald@qorvault.com with ED25519 key SHA256:BixbZ0qL...`, status `G`. Nothing was pushed (the hook blocks `git push`; pushing remains the operator's call).
+
+   *Branch is `claude/feat-facts-minutes`.
+
+   Two things this commit does **not** cover. The quadlet change (`~/.config/containers/systemd/civic-postgres.container`) is **outside any git repo** — the loopback fix is unversioned and will be lost by any process that regenerates that file. And the working tree still carries untracked files from prior sessions: `reports/ingest-degradation-2026-09-13.md` and three `docs/session-logs/` debriefs (2026-09-08 ×2, 2026-09-13 ingest diagnostic).
 
 2. **Quarantine or remove the legacy flat scraper — highest priority.** `.../framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py`, `-rwxr-xr-x`, inside the authoritative backup corpus. Suggested minimum: `chmod a-x`. Better: move it out of the data directory into a clearly-marked `legacy/` path so it cannot be run by autocomplete or a stray `find -exec`. This is the tool that caused the 71-record incident and nothing currently prevents a repeat.
 

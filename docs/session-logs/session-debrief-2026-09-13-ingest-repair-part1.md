@@ -72,16 +72,15 @@ Also deferred by design:
 
 1. **Part 2 is gated on operator approval.** Reply `approved` with the steps wanted (a = Stage 2 on the 48, b = `link_40.sql`, c = `delete_31.sql`, d = re-list the two 2026-02-11 meetings). Approving a/b/d while deferring c is coherent — it restores everything civically significant and leaves only duplicate citations.
 
-2. **Commit is pending.** Per the session rules, recorded rather than forced:
-   ```
-   cd ~/workspace/projects/ksd-main
-   git add reports/ingest-repair-2026-09-13.md \
-           docs/session-logs/session-debrief-2026-09-13-ingest-repair-part1.md \
-           scripts/ingest-repair-2026-09-13/
-   git commit -m "docs: prepare 2026 ingest repair (Part 1) with backup, proofs and unexecuted scripts"
-   ```
-   `backups/` is gitignored and must stay that way — it contains corpus content.
-   The working tree still carries the prior session's uncommitted `reports/ingest-degradation-2026-09-13.md` and three untracked debriefs from 2026-09-08 and 2026-09-13.
+2. **Committed — not blocked.** `ae3a127` on `claude/feat-facts-minutes`, 11 files, 2,205 insertions. All pre-commit hooks passed and none was bypassed.
+
+   The hooks did fail on the first attempt, and the failures were legitimate rather than spurious, so they were fixed rather than skipped: `ruff` raised 9 × `S608` (SQL built by f-string interpolation) in `process_48.py`, and `interrogate` measured 77.8% docstring coverage against an 80% minimum. `process_48.py` was rewritten so every SQL statement is a fixed literal with no interpolation — which is what `CLAUDE.md` requires anyway — and the missing docstrings were added. All three scripts were re-run afterwards and produce byte-identical results (31/31, 40/40, preflight OK), confirming the reformatting changed no behaviour.
+
+   `backups/` is gitignored and must stay that way — it contains corpus content. Verified with `git check-ignore` before staging.
+
+   The working tree still carries the prior session's uncommitted `reports/ingest-degradation-2026-09-13.md` and three untracked debriefs from 2026-09-08 and 2026-09-13. Left alone: not this session's work, and committing someone else's uncommitted output silently is worse than leaving it visible.
+
+7. **Commit signing identity is a placeholder.** `git log --show-signature` returns a good ED25519 signature, but the identity reads `Good "git" signature for YOUR_EMAIL_HERE`. The signature is cryptographically valid; the allowed-signers entry was never filled in. Signed commits therefore verify without attributing to a real identity, which defeats much of the point. Worth correcting in `.gitconfig` / the allowed-signers file. Noticed in passing, not changed.
 
 3. **Guard gap: no hook protects the corpus from `DELETE`/`UPDATE`.** The guardrails cover dangerous shell commands — `sudo` was correctly blocked this session — but nothing would have stopped `delete_31.sql` from being executed during a read-only phase. The discipline here was procedural, not enforced. Worth a hook that refuses non-`SELECT` SQL against `boarddocs-postgres` unless an approval marker is present. **Reported, not used.**
 

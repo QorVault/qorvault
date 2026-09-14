@@ -1,0 +1,12 @@
+# Shared virtualenv for the facts layer. Never commit an environment.
+.venv/
+*/.venv/
+
+# Intermediate CSV staged by build.py before \copy. Regenerable, and may
+# contain verbatim minutes text -- keep it out of git.
+_build/
+*/_build/
+
+__pycache__/
+*.pyc
+.pytest_cache/

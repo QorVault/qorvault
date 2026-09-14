@@ -1,0 +1,18 @@
+# Direct runtime dependencies for the facts layer.
+#
+# Only packages the code actually imports belong here. requirements-lock.txt
+# holds the full resolved set (pip freeze) for reproducible rebuilds.
+#
+# pytest is NOT pinned here: system python3 already provides it (9.0.2), so
+# the venv is created with --system-site-packages and reuses it.
+
+# Page-accurate text extraction from the source minutes PDFs. Needed because
+# Postgres holds no page-level text at all: document_pages is empty and
+# chunks.source_page is NULL for all 179,081 chunks, so locator page numbers
+# can only come from re-reading the PDFs.
+pdfplumber==0.11.10
+
+# Postgres driver for the loader. Replaces shelling out to `psql` inside the
+# container, which bypassed credentials entirely rather than injecting them
+# at runtime.
+psycopg2-binary==2.9.13

@@ -169,3 +169,24 @@ tree. The real risk is a hand-typed `--data-dir`, or someone "fixing" a stale de
 2. Confirm the target has ~1,684 meeting directories:
    `find <path> -mindepth 1 -maxdepth 1 -type d | wc -l`
 3. Never point it at anything ending `_DO_NOT_LOAD`
+
+---
+
+## BoardDocs committee ID
+
+The KSD BoardDocs committee ID for the **Main Governing Board** is `A94NQ8610101`.
+
+It is passed as `current_committee_id` in the POST body of every BoardDocs lookup agent
+(`BD-GetMeetingsList`, `BD-GetAgenda`, `BD-GetAgendaItem`, `PRINT-AgendaDetailed`). Omitting
+it does **not** produce an error: the agents return HTTP 200 with an empty result set, so the
+failure is silent and looks like "this district has no meetings."
+
+| Source | Value | Status |
+|---|---|---|
+| `ksd_forensic/scripts/boarddocs_update.py:49` | `A94NQ8610101` | **Authoritative** — this scraper ran at scale (806 meetings) |
+| `ksd_forensic/scripts/boarddocs_api_scrape.py:34` | `A94NQ8610101` | **Authoritative** — same value, independently |
+| `ksd_forensic/scripts/KentScrapes.py:17` | `A4EP5J5A1F8D` | **Unverified — do not use.** Flagged by its own comment: `# Main Board - you may need to verify this` |
+
+Confirmed independently on 2026-09-15 against the live public page, where `A94NQ8610101` is
+the `committeeid` attribute on the "Main Governing Board" selector, and by a successful
+`BD-GetMeetingsList` call returning all 1,736 meetings.

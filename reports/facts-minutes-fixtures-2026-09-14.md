@@ -1139,3 +1139,283 @@ podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
 .venv/bin/python -m pytest test_parsers.py -q      # 80 passed
 .venv/bin/python fixtures.py                       # exit 0
 ```
+
+---
+
+# Part 3 — R11 applied (same day, same branch)
+
+Operator approved R11: recognise `Aye:`, handle a roll printed above its
+resolution, and treat `None.` as zero votes. Measured first, as instructed.
+
+**Result: the four 2025-12-10 officer elections are now recorded correctly —
+20 named votes where there had been 8 wrong ones and then none. All four hard
+fixtures stay green or blocked; `fixtures.py` still exits 0. Tests 80 → 93.**
+
+## 1. Measurement, before changing anything
+
+Over all 2,543 agenda items carrying a `Motion & Voting` block (4,214 motions):
+
+| Year | Items | `Aye:` items | `Yea:` items | `Nay:` items | `<label>: None.` items |
+|---|---:|---:|---:|---:|---:|
+| 2018 | 113 | 0 | 113 | 20 | 0 |
+| 2019 | 415 | 0 | 411 | 23 | 0 |
+| 2020 | 381 | 0 | 378 | 72 | 0 |
+| 2021 | 363 | 0 | 358 | 38 | 0 |
+| 2022 | 321 | 0 | 318 | 31 | 0 |
+| 2023 | 361 | 0 | 361 | 25 | 0 |
+| 2024 | 214 | 0 | 214 | 59 | 0 |
+| 2025 | 330 | **1** | 326 | 73 | **1** |
+| 2026 | 45 | 0 | 43 | 14 | 0 |
+| **All** | **2,543** | **1** | **2,522** | **355** | **1** |
+
+Roll position relative to the `Final Resolution:` line, per motion:
+
+| Roll position | Motions |
+|---|---:|
+| Roll on the first non-blank line after the resolution | 4,200 |
+| Roll both above and below | 13 |
+| Roll above only | 1 |
+| No roll at all | 0 |
+
+**`Aye:` appears in exactly one agenda item in the corpus, and so does
+`<label>: None.` — both in `1479b410`, the 2025-12-10 board reorganization.**
+
+This answers the open question I raised when filing R11. I had flagged that
+reorganization meetings happen every December and this might therefore affect
+the whole record. **It does not.** Every other year records officer elections
+in a form this parser already reads, or does not record them in an agenda item
+at all. R11 is a one-document fix, and I would not have known that without
+measuring.
+
+### 1a. A nuance in the "roll above only" count
+
+Only 1 of `1479b410`'s 4 motions classifies as "above only" on the *old*
+geometry, because each motion's apparent below-the-line roll was really the
+next motion's above-the-line roll. After R7's contiguity rule those false
+below-blocks are gone, so all four motions genuinely have no roll below — which
+is exactly the condition the decided rule keys on. The rule works because R7
+landed first; on the pre-R7 parser it would have fixed only the last election.
+
+## 2. What changed in the parser
+
+| Change | Why |
+|---|---|
+| `Aye` added to `ROLL_RX`, `ROLL_LINE_RX` and `VOTE_MAP` (`aye → yes`) | An affirmative label the parser did not recognise. Its absence is why the old parser read these rolls as Nay-only. |
+| `NONE_ROLL_RX` + guards in `_split_names` | `Nay: None.` is a count of zero. Matched against the **whole** roll value (and against a bare comma-separated token), so a director whose name merely contained the word is unaffected — pinned by `test_a_real_name_is_not_dropped`. |
+| `_preceding_roll_block(text, lower_bound, anchor_start)` | Fallback used **only** when a motion has no roll below its resolution. Scans backwards from the resolution for the contiguous roll immediately above it. |
+| `prev_roll_end` carried across the motion loop | Bounds the look-back so a motion with genuinely no roll cannot reach back and claim the previous motion's. |
+| Vote locator offsets now keyed to `roll_start` | The roll may sit above the resolution, so `tail_start` is no longer the right base for the citation. Pinned by `test_locator_quotes_point_at_the_roll_above_the_resolution`. |
+
+Precedence is explicit: **a roll below the resolution always wins.** The
+look-back is consulted only when there is nothing below. That is what keeps the
+13 "above and below" motions — the original bug-3 shape, where the roll above
+belongs to the *next* motion — parsing exactly as before.
+
+### 2a. Correction to my own R7 implementation
+
+Writing the R11 regression test exposed a real weakness in the code I committed
+earlier today. `_canonical_roll_block` tolerated up to 200 characters of prose
+between a resolution and its roll, on my speculation that some items print an
+interstitial line. **On the excerpt, that tolerance was enough to bridge the
+narrative and let motion 3 claim motion 4's roll — reintroducing the very
+off-by-one R7 exists to stop.**
+
+I measured whether the tolerance was earning anything: **4,210 of 4,214 motions
+put the roll on the first non-blank line after the resolution, and not one
+motion in the corpus needs a gap.** The only motions with a roll further down
+are the 2025-12-10 elections, where that roll belongs to the next motion. The
+tolerance was pure risk with zero benefit, so it is removed: any non-blank
+content now ends the roll.
+
+This is a case where a test written for one defect caught a latent one in the
+fix for another. The 200-character tolerance was my invention, not something
+the corpus asked for, and I should not have added it speculatively.
+
+## 3. Regression tests
+
+`TestPreResolutionAyeRolls` (7 tests) on a faithful excerpt of `1479b410`, and
+`TestNoneRollHandling` (6 tests). Verified against the committed post-R7 parser
+by stashing `vote_parser.py`:
+
+```
+FAILED TestPreResolutionAyeRolls::test_four_officer_elections_are_parsed
+FAILED TestPreResolutionAyeRolls::test_each_election_gets_its_own_roll_not_the_next_ones
+FAILED TestPreResolutionAyeRolls::test_cook_for_president_fails_two_to_three
+FAILED TestPreResolutionAyeRolls::test_aye_is_an_affirmative_label
+FAILED TestPreResolutionAyeRolls::test_nay_none_is_zero_votes_not_a_director
+FAILED TestNoneRollHandling::test_none_yields_no_names[None.]
+FAILED TestNoneRollHandling::test_none_yields_no_names[None]
+FAILED TestNoneRollHandling::test_none_yields_no_names[ NONE ]
+FAILED TestNoneRollHandling::test_none_yields_no_names[None .]
+9 failed, 4 passed
+```
+
+All assertion failures, no import errors — `_split_names` is imported inside its
+test for exactly that reason. Representative output:
+
+```
+E  AssertionError: assert ['None'] == []
+E    Left contains one more item: 'None'
+```
+
+`test_a_post_resolution_roll_still_wins` pins the ordinary shape so the
+fallback cannot start displacing normal parsing.
+
+## 4. Reload and the old-vs-new diff
+
+`build.py --reload`, 1m13s. Diffed the committed post-R7 parser against the R11
+parser over all 2,543 agenda items, as for R7.
+
+**Exactly one document differs. Nothing was removed anywhere. No motion changed
+disposition, and no document changed its motion count.**
+
+| Document | Meeting | Motion | Votes | Added |
+|---|---|---|---:|---|
+| `1479b410` | 2025-12-10 regular | `#a18` | 0 → 5 | Cook (yes), Song (yes), Williams (no), Gregory (no), Margel (no) |
+| `1479b410` | 2025-12-10 regular | `#a19` | 0 → 5 | Williams (yes), Gregory (yes), Margel (yes), Cook (no), Song (no) |
+| `1479b410` | 2025-12-10 regular | `#a20` | 0 → 5 | Cook, Song, Williams, Gregory, Margel (all yes) |
+| `1479b410` | 2025-12-10 regular | `#a21` | 0 → 5 | Song (yes), Williams (yes), Gregory (yes), Cook (no), Margel (no) |
+
+Row counts:
+
+| Metric | Before | After | Delta |
+|---|---:|---:|---:|
+| `facts.meeting` | 1,646 | 1,646 | 0 |
+| `facts.attendance` | 3,515 | 3,515 | 0 |
+| `facts.motion` | 6,507 | 6,507 | 0 |
+| **`facts.vote`** | 19,613 | **19,633** | **+20** |
+| `facts.executive_session` | 280 | 280 | 0 |
+| `facts.minutes_parse_log` | 874 | 874 | 0 |
+| vote: yes / no / abstain | 19,042 / 455 / 116 | 19,055 / 462 / 116 | **+13 / +7 / 0** |
+| disposition: adopted / lost / withdrawn | 6,391 / 115 / 1 | 6,391 / 115 / 1 | **0 / 0 / 0** |
+| motion source: agenda_item / minutes | 4,214 / 2,293 | 4,214 / 2,293 | 0 / 0 |
+| `vote_format='named'` motions | 4,210 | **4,214** | **+4** |
+| Longest motion locator quote | 3,516 | 3,516 | 0 |
+| Parse status parsed / superseded | 795 / 79 | 795 / 79 | 0 / 0 |
+
+Every delta accounted for:
+
+- **+20 votes** = 4 elections × 5 directors, all in `1479b410`. The 13 yes / 7 no
+  split is arithmetic on the four rolls: 2+3+5+3 = 13 affirmative,
+  3+2+0+2 = 7 negative.
+- **+4 named motions** — `#a18`–`#a21` now have votes, so they move from
+  `carried_no_names` to `named`. All 4,214 agenda-item motions are now named.
+- **Zero disposition changes**, verified directly rather than by inference: all
+  6,507 dispositions were snapshotted before the reload and compared by
+  `motion_id` afterwards. 0 changed, 0 motion ids disappeared, 0 appeared.
+- **Directors named `None` in `facts.vote`: 0.**
+
+Motions with `vote_format='named'` now equals the full agenda-item motion count
+(4,214), which is the expected end state: every BoardDocs `Motion & Voting`
+block carries a roll.
+
+## 5. Fixtures, known-set and hand-count targets
+
+```
+pytest test_parsers.py -q          93 passed
+fixtures.py                        exit 0
+  exec_sessions_2024               PASS
+  attendance_vote_discrepancies    PASS  (116 rows, 5 meetings, 0 unknown, 0 stale)
+  disposition_and_locator          PASS  (0 of 6,507)
+  operator_hand_counts             BLOCKED (awaiting six counts)
+```
+
+**Known-set unaffected** — still the same five meetings with the same causes and
+the same 116 rows. 2025-12-10 does **not** enter the view.
+
+**One caveat I want on the record about that.** 2025-12-10 does not appear in
+`facts.attendance_vote_discrepancies` because it has **no attendance rows at
+all** (no minutes document for that meeting in the corpus), and the view inner-
+joins on recorded attendance. So its 5-voter rolls are not checked against a
+roll call — not because they passed a check, but because there is nothing to
+check them against. That is the documented behaviour of the fixture ("a motion
+whose meeting has no attendance record cannot violate the constraint, it simply
+cannot be checked"), and it is correct, but a reader should not mistake the
+green result for confirmation of these 20 new rows.
+
+**Hand-count targets unaffected** — all six re-verified against the database
+after the reload; every `parser_motions_*` figure in `hand_counts.yaml` still
+matches. None of the six is an agenda-item-sourced meeting, so R11 could not
+have touched them.
+
+**2026-02-04 export unchanged**, ignoring the trailing whitespace the
+pre-commit hook strips.
+
+## 6. Recommended changes (requires operator approval — none made)
+
+- **R12 (unchanged, still open)** — sweep for motions whose roll is the last
+  content in its document, to confirm the R7 blast radius really was two
+  documents. The Part 3 measurement partly covers this (the roll-position table
+  shows only 14 motions are not in the plain below-the-line shape), so this is
+  now close to confirmed rather than open.
+- **R13 — 2025-12-10 has no minutes document in the corpus.** That is why its
+  votes cannot be cross-checked against attendance (§5). It is one of the
+  missing-minutes meetings already visible in
+  `facts.meetings_missing_minutes`; flagging it here only because it is now the
+  source of 20 vote rows that no roll call constrains.
+
+R1–R6 from 2026-09-13 remain outstanding. R7, R8, R9, R10 and R11 are done.
+
+## 7. Compliance notes for Part 3
+
+- Writes confined to schema `facts` (`build.py --reload`). No table outside
+  `facts` written; nothing deleted outside `facts`; views unchanged this part.
+- All `documents` reads via `db.query`, session `READ ONLY`, including the
+  measurement pass and the old-vs-new parser diff.
+- No LLM in any date, name, vote, motion or count path. The `Aye`/`None`
+  handling and the backward roll scan are regex and line arithmetic.
+- Credentials injected at runtime; `.env` untouched; no password printed.
+- No hook modified or bypassed.
+
+## Appendix — Part 3 commands
+
+```bash
+cd ~/workspace/projects/ksd-minutes/facts/minutes
+
+# 1. Measure before changing anything
+.venv/bin/python -c "
+import re, db
+from collections import Counter, defaultdict
+from vote_parser import FINAL_RES_RX, MADE_RX, MOTION_VOTING_RX
+AYE=re.compile(r'^[ \t]*Aye[ \t]*:', re.I|re.M); YEA=re.compile(r'^[ \t]*Yea[ \t]*:', re.I|re.M)
+NAY=re.compile(r'^[ \t]*Nay[ \t]*:', re.I|re.M)
+NONE=re.compile(r'^[ \t]*(?:Aye|Yea|Nay|Abstain|Absent)[ \t]*:[ \t]*None[ \t.]*\$', re.I|re.M)
+ANY=re.compile(r'^[ \t]*(Aye|Yea|Nay|Abstain|Absent)[ \t]*:', re.I|re.M)
+# ... full script in the session transcript; counts by year and roll position
+"
+
+# 2. Confirm the interstitial tolerance was unnecessary (leads to the R7 correction)
+#    -> 4,210 roll_on_first_line, 3 roll_after_>200_chars, 0 in between
+
+# 3. Prove the new tests fail on the committed post-R7 parser
+cp vote_parser.py /tmp/vote_parser.r11.py
+git stash push -- vote_parser.py
+.venv/bin/python -m pytest test_parsers.py \
+  -k "TestPreResolutionAyeRolls or TestNoneRollHandling" -q
+git checkout -- vote_parser.py; git stash pop
+
+# 4. Snapshot (including all 6,507 dispositions), reload, diff, compare
+.venv/bin/python -c "
+import db, json
+json.dump({m:d for m,d in db.query('SELECT motion_id, disposition FROM facts.motion')},
+          open('/tmp/disp_before_r11.json','w'))
+"
+.venv/bin/python build.py --reload                 # ~73s -> vote = 19,633
+
+git show HEAD:facts/minutes/vote_parser.py > /tmp/vote_parser_r7.py
+.venv/bin/python -c "
+import sys, importlib.util, db
+def load(n,p):
+    s=importlib.util.spec_from_file_location(n,p); m=importlib.util.module_from_spec(s)
+    sys.modules[n]=m; s.loader.exec_module(m); return m
+old=load('vp_r7','/tmp/vote_parser_r7.py'); import vote_parser as new
+# per-document vote diff + disposition-change check; see transcript
+"
+
+# 5. Verify
+.venv/bin/python -m pytest test_parsers.py -q      # 93 passed
+.venv/bin/python fixtures.py                       # exit 0
+.venv/bin/python export_meeting.py 2026-02-04 -o /tmp/exp_r11.md
+diff <(sed 's/[[:space:]]*\$//' ../../reports/meeting-export-2026-02-04.md) \
+     <(sed 's/[[:space:]]*\$//' /tmp/exp_r11.md)   # identical
+```

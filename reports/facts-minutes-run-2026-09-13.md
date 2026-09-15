@@ -478,3 +478,26 @@ record before 2018.
 meeting row `2026-02-04:work_study#2` that does not exist in the database — a
 duplicate punctuated slug (R6) deduped by the census after that export was
 generated. Regenerated 2026-09-14.
+
+## A6 — Figures superseded again by the R11 reload (2026-09-14, later)
+
+After A4, a second fix (R11) recognised `Aye:` as an affirmative label, handled
+a vote roll printed above its resolution, and stopped reading `Nay: None.` as a
+director. This recovered the 2025-12-10 board officer elections.
+
+| Figure | 2026-09-13 | After R7/R8 | After R11 (current) |
+|---|---:|---:|---:|
+| `facts.vote` rows | 19,625 | 19,613 | **19,633** |
+| Motions with `vote_format='named'` | 4,213 | 4,210 | **4,214** |
+| 2025 named motions | 723 | 720 | **724** |
+
+All four motions that A4 reported as having lost `named` status
+(`2025-12-10:regular#a18`–`#a21`) now carry their correct five-director rolls:
+2-3 (failed), 3-2, 5-0 and 3-2. `facts.meeting`, `facts.attendance`,
+`facts.motion`, `facts.executive_session` and `facts.minutes_parse_log` remain
+at their 2026-09-13 values, and **no motion's disposition has changed at any
+point** across all three reloads.
+
+Every agenda-item motion in the corpus (4,214) is now `vote_format='named'`.
+The §3 headline finding is still untouched: no named votes exist anywhere in the
+record before 2018.

@@ -375,3 +375,129 @@ podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
 .venv/bin/python fixtures.py                       # exit 0
 .venv/bin/python export_meeting.py 2026-02-04 -o ../../reports/meeting-export-2026-02-04.md
 ```
+
+---
+
+# Part 3 — R11 applied (same session, same branch)
+
+Operator approved R11 with a measure-first instruction. **The four 2025-12-10
+board officer elections are now recorded correctly — 20 named votes where there
+had been 8 wrong ones and then none at all.** All four hard fixtures stay green
+or blocked; `fixtures.py` still exits 0. Tests 80 → 93.
+
+## Decisions (Part 3)
+
+**Measuring first changed the scope of the fix.** When I filed R11 I flagged
+that reorganization meetings happen every December and this might affect the
+whole record. It does not: **`Aye:` appears in exactly 1 of 2,543 agenda items,
+and so does `<label>: None.` — both in the same document.** R11 is a
+one-document fix. I would have over-engineered it without the measurement.
+
+**A roll below the resolution always wins; the look-back is a fallback only.**
+That ordering is what keeps the 13 motions with a roll both above and below
+(the original bug-3 shape, where the roll above belongs to the *next* motion)
+parsing exactly as before. Reversing the precedence would have re-broken them.
+
+**`None` is matched against the whole roll value, not as a substring.** "Nay:
+None." is a count of zero. A director whose name merely contained the word is
+unaffected, and a test pins that rather than leaving it to inspection.
+
+**The look-back is bounded by the previous motion's consumed roll.** Without
+`prev_roll_end`, a motion with genuinely no roll could scan backwards and claim
+the previous motion's — trading one off-by-one for another.
+
+## What changed (Part 3)
+
+| File | Change |
+|---|---|
+| `facts/minutes/vote_parser.py` | `Aye` added to `ROLL_RX` / `ROLL_LINE_RX` / `VOTE_MAP`; `NONE_ROLL_RX` guards; `_preceding_roll_block`; `prev_roll_end` bound; vote locators keyed to `roll_start`; **removed the 200-char interstitial tolerance from `_canonical_roll_block`**. |
+| `facts/minutes/test_parsers.py` | +13 tests (`TestPreResolutionAyeRolls`, `TestNoneRollHandling`). |
+| `reports/facts-minutes-fixtures-2026-09-14.md` | Part 3 and its appendix. |
+| `reports/facts-minutes-run-2026-09-13.md` | Addendum section A6. |
+
+Database: `build.py --reload` only. `facts.vote` 19,613 → **19,633 (+20)** and
+`vote_format='named'` 4,210 → **4,214 (+4)**. Every other table, source split,
+disposition split, parse status and the longest quote are unchanged.
+
+## Findings (Part 3)
+
+**I found a latent defect in my own R7 fix, and the R11 test is what caught
+it.** `_canonical_roll_block` tolerated up to 200 characters of prose between a
+resolution and its roll — my speculation, not something the corpus asked for. On
+the R11 excerpt that tolerance was enough to bridge the narrative and let
+motion 3 claim motion 4's roll, reintroducing the exact off-by-one R7 exists to
+stop. Measured the cost of removing it: **4,210 of 4,214 motions put the roll on
+the first non-blank line, and not one motion needs a gap.** Removed. The lesson
+is narrow and worth keeping: I added a tolerance on a guess, and it was pure
+risk with zero measured benefit.
+
+**Every delta is accounted for arithmetically, not by inference.** +20 votes =
+4 elections × 5 directors; the 13 yes / 7 no split is 2+3+5+3 and 3+2+0+2 over
+the four rolls. All 6,507 dispositions were snapshotted before the reload and
+compared by `motion_id` afterwards: **0 changed, 0 disappeared, 0 appeared.**
+Directors named `None` in `facts.vote`: **0**.
+
+**All 4,214 agenda-item motions are now `vote_format='named'`** — the expected
+end state, since every BoardDocs `Motion & Voting` block carries a roll.
+
+**The new 20 rows are not constrained by any roll call.** 2025-12-10 has no
+attendance rows at all (no minutes document in the corpus), and
+`facts.attendance_vote_discrepancies` inner-joins on recorded attendance. So
+that meeting cannot enter the view — not because it passed a check, but because
+there is nothing to check it against. The green fixture should not be read as
+confirmation of these rows. Filed as R13.
+
+## Open Items (Part 3)
+
+### 1. 2025-12-10 votes are unverifiable against attendance — R13
+
+- **Symptom:** 20 new vote rows for a meeting with no attendance record.
+- **Diagnosis:** No minutes document in the corpus for 2025-12-10; it is already
+  in `facts.meetings_missing_minutes`. The discrepancy view can only check
+  meetings that have a recorded roll call.
+- **Next step:** If the minutes are later posted, re-ingest and the check
+  becomes meaningful. No action possible now.
+- **Urgency:** Low, but worth knowing before quoting these four elections.
+
+### 2. R12 — blast-radius sweep, now nearly closed
+
+Part 3's roll-position measurement shows only 14 of 4,214 motions are not in the
+plain below-the-line shape (13 above-and-below, 1 above-only). That is close to
+a confirmation that R7's blast radius really was two documents. Remaining work
+is a formal count rather than an investigation.
+
+### 3. Hand-count fixture still BLOCKED
+
+Unchanged. All six targets re-verified against the database after this reload —
+every `parser_motions_*` figure still matches, and none of the six is an
+agenda-item-sourced meeting, so R11 could not have touched them. Still the only
+independent check on parser accuracy, still waiting on your counts.
+
+### 4. Closed
+
+R7, R8, R9, R10 and R11 are done. R1–R6 from 2026-09-13 remain outstanding.
+
+## System state summary (Part 3)
+
+- Schema `facts`: six tables reloaded. `facts.vote` is the only table whose row
+  count changed. Views unchanged this part. Nothing written or deleted outside
+  `facts`.
+- Branch `claude/facts-minutes-fixtures`, three commits ahead of `main` @
+  `27f80d2`. Not pushed, not merged. Pre-commit hooks ran and passed; none
+  bypassed.
+- All corpus reads `READ ONLY`, including the measurement pass and the
+  old-vs-new parser diff.
+- Credentials injected at runtime; `.env` untouched; no password printed.
+
+## Regenerating (Part 3)
+
+```bash
+cd ~/workspace/projects/ksd-minutes/facts/minutes
+export PGPASSWORD=$(podman inspect boarddocs-postgres \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^POSTGRES_PASSWORD=' | cut -d= -f2-)
+
+.venv/bin/python build.py --reload                 # ~73s -> vote = 19,633
+.venv/bin/python -m pytest test_parsers.py -q      # 93 passed
+.venv/bin/python fixtures.py                       # exit 0
+```

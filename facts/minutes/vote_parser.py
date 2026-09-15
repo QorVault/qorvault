@@ -47,15 +47,23 @@ MOVER_RX = re.compile(
     re.I,
 )
 MOVER_ONLY_RX = re.compile(r"Motion\s+by\s+([^.,\n]{2,60}?)\s*\.", re.I)
-ROLL_RX = re.compile(r"^\s*(Yea|Nay|Abstain|Absent)\s*:\s*([^\n]+)$", re.M)
+# Vote roll labels. "Aye" is an affirmative synonym for "Yea": it appears in
+# exactly one agenda item in the corpus (1479b410, the 2025-12-10 board
+# reorganization), where every officer election is recorded with Aye/Nay. Not
+# recognising it meant those rolls were read as Nay-only, which is how a
+# unanimous 5-0 vote for Vice President came through as a lone "None" voting no.
+ROLL_RX = re.compile(r"^\s*(Aye|Yea|Nay|Abstain|Absent)\s*:\s*([^\n]+)$", re.M)
 CONSENT_RX = re.compile(r"consent\s+(agenda|calendar)", re.I)
+# "Nay: None." records that nobody voted that way. It is a count of zero, not a
+# director. Matched as the ENTIRE roll value so a real name is never dropped.
+NONE_ROLL_RX = re.compile(r"^\s*none\s*\.?\s*$", re.I)
 # A later block heading ends the current motion's block. "Recommended Action"
 # opens the next agenda item's narrative; "Motion & Voting" opens the next
 # voting block.
 RECOMMENDED_ACTION_RX = re.compile(r"Recommended\s+Action", re.I)
 # A line that is part of a vote roll: the label lines themselves, or a blank
 # line separating them. Anything else ends the roll.
-ROLL_LINE_RX = re.compile(r"^\s*(?:Yea|Nay|Abstain|Absent)\s*:", re.I)
+ROLL_LINE_RX = re.compile(r"^\s*(?:Aye|Yea|Nay|Abstain|Absent)\s*:", re.I)
 
 # Locator quote ceiling for an agenda-item motion.
 #
@@ -69,7 +77,7 @@ ROLL_LINE_RX = re.compile(r"^\s*(?:Yea|Nay|Abstain|Absent)\s*:", re.I)
 MOTION_QUOTE_MAX_LEN = 4000
 
 DISPOSITION_MAP = {"carries": "adopted", "fails": "lost"}
-VOTE_MAP = {"yea": "yes", "nay": "no", "abstain": "abstain", "absent": "absent"}
+VOTE_MAP = {"aye": "yes", "yea": "yes", "nay": "no", "abstain": "abstain", "absent": "absent"}
 
 
 @dataclass
@@ -105,11 +113,18 @@ def _split_names(blob: str) -> list[str]:
     """Split a comma-separated roll into individual director names.
 
     Args:
-        blob: Text after ``Yea:``/``Nay:``/``Abstain:``.
+        blob: Text after ``Aye:``/``Yea:``/``Nay:``/``Abstain:``.
 
     Returns:
-        Trimmed names, empty entries removed.
+        Trimmed names, empty entries removed. Empty when the roll records
+        nobody.
     """
+    # "Nay: None." means nobody voted that way -- a count of zero. Read as a
+    # name it produced a director called "None" voting against seating the
+    # Vice President. Checked against the whole roll value, so a director whose
+    # name merely contained the word would be unaffected.
+    if NONE_ROLL_RX.match(blob):
+        return []
     out = []
     for part in blob.split(","):
         name = re.sub(r"\s+", " ", part).strip(" .;:")
@@ -120,7 +135,10 @@ def _split_names(blob: str) -> list[str]:
         # never contains a vote label or a colon.
         if ":" in name:
             continue
-        if re.match(r"^(Yea|Nay|Abstain|Absent)\b", name, re.I):
+        if re.match(r"^(Aye|Yea|Nay|Abstain|Absent)\b", name, re.I):
+            continue
+        # A bare "None" inside a comma-separated roll is also a count of zero.
+        if NONE_ROLL_RX.match(name):
             continue
         if not re.match(r"^[A-Z]", name):
             continue
@@ -158,19 +176,66 @@ def _canonical_roll_block(tail: str) -> str:
             out.append(line)
             continue
         if not line.strip():
-            # Blank lines are allowed inside a roll but never start one.
+            # Blank lines are permitted inside a roll and before it, but never
+            # carry content.
             out.append(line)
             continue
-        if seen_roll:
-            break
-        # Before the first roll line, allow the short interstitial that some
-        # items print between the resolution and its roll ("Voting took place
-        # via roll call vote."). Bounded, so an absent roll cannot reach
-        # forward into an unrelated one.
-        if sum(len(s) for s in out) > 200:
-            break
-        out.append(line)
+        # Any other content ends the roll -- and, before the roll has started,
+        # means this motion has none below its resolution. No prose is tolerated
+        # in between: measured over the corpus, 4,210 of 4,214 motions put the
+        # roll on the first non-blank line after the resolution, and not one
+        # needs a gap. The only motions with a roll further down are the
+        # 2025-12-10 elections, where that roll belongs to the NEXT motion --
+        # so reaching across prose would reintroduce the off-by-one this
+        # function exists to stop.
+        break
     return "".join(out) if seen_roll else ""
+
+
+def _preceding_roll_block(text: str, lower_bound: int, anchor_start: int) -> tuple[int, str]:
+    """Find the contiguous vote roll that sits just BEFORE a resolution line.
+
+    Some items print the roll above its ``Final Resolution:`` line instead of
+    below it. The 2025-12-10 board reorganization is the corpus's only example:
+    each officer election reads as narrative, then ``Aye:``/``Nay:`` lines, then
+    the resolution. Read with the usual below-the-line assumption, every motion
+    received the *following* motion's roll -- a systematic off-by-one.
+
+    Used only as a fallback, when a motion has no roll after its resolution.
+    Where a roll appears both above and below (the surname-only pre-roll shape
+    that belongs to the next motion), the one below wins and this is never
+    consulted.
+
+    Args:
+        text: Full document text.
+        lower_bound: Offset the scan may not cross. This is the end of the
+            previous motion's consumed roll, which stops a motion with no roll
+            of its own from claiming the previous motion's.
+        anchor_start: Start offset of this motion's ``Final Resolution:`` line.
+
+    Returns:
+        ``(absolute_offset, block_text)`` for the roll, or ``(anchor_start,
+        "")`` when there is none.
+    """
+    head = text[lower_bound:anchor_start]
+    lines = head.splitlines(keepends=True)
+    kept: list[str] = []
+    seen_roll = False
+    # Walk backwards from the resolution: the roll is whatever sits immediately
+    # above it. The first non-blank, non-roll line above ends it.
+    for line in reversed(lines):
+        if ROLL_LINE_RX.match(line):
+            seen_roll = True
+            kept.append(line)
+            continue
+        if not line.strip():
+            kept.append(line)
+            continue
+        break
+    if not seen_roll:
+        return anchor_start, ""
+    block = "".join(reversed(kept))
+    return lower_bound + len(head) - len(block), block
 
 
 def parse_agenda_item(text: str) -> list[AgendaMotion]:
@@ -197,6 +262,9 @@ def parse_agenda_item(text: str) -> list[AgendaMotion]:
 
     made = [m.start() for m in MADE_RX.finditer(text)]
     out: list[AgendaMotion] = []
+    # End offset of the roll already consumed by the previous motion. The
+    # look-back for an above-the-line roll may not cross it.
+    prev_roll_end = 0
 
     for i, anchor in enumerate(anchors):
         # Motion text: nearest "A motion was made" before this resolution that
@@ -260,6 +328,13 @@ def parse_agenda_item(text: str) -> list[AgendaMotion]:
         # nomination roll-call sequence can sit inside this same block. Keep
         # only the contiguous roll that follows the resolution.
         tail = _canonical_roll_block(text[tail_start:next_start])
+        roll_start = tail_start
+        if not tail:
+            # No roll below the resolution. Some items print it above instead,
+            # so look there before concluding the motion has no named vote.
+            # `prev_roll_end` bounds the look-back so a motion that genuinely
+            # has no roll cannot claim the previous motion's.
+            roll_start, tail = _preceding_roll_block(text, prev_roll_end, anchor.start())
 
         votes: list[AgendaVote] = []
         counts = {"yes": 0, "no": 0, "abstain": 0}
@@ -274,12 +349,14 @@ def parse_agenda_item(text: str) -> list[AgendaMotion]:
                     AgendaVote(
                         director_raw=name,
                         vote=vote,
-                        offset=tail_start + rm.start(),
-                        quote=make_quote(text, tail_start + rm.start(), tail_start + rm.end()),
+                        offset=roll_start + rm.start(),
+                        quote=make_quote(text, roll_start + rm.start(), roll_start + rm.end()),
                     )
                 )
                 if vote in counts:
                     counts[vote] += 1
+
+        prev_roll_end = max(prev_roll_end, anchor.end(), roll_start + len(tail))
 
         disposition = DISPOSITION_MAP[anchor.group(1).lower()]
         out.append(

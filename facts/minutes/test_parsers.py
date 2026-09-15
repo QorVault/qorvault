@@ -604,3 +604,123 @@ class TestAgendaMotionQuoteReachesDisposition:
         from vote_parser import MOTION_QUOTE_MAX_LEN
 
         assert MOTION_QUOTE_MAX_LEN >= 3518
+
+
+# Faithful excerpt of agenda item 1479b410-dc79-40f4-b452-c5af3d306f1f,
+# "Reorganization of the Board of Directors and Election of Officers", from the
+# 2025-12-10 regular meeting. Four officer elections. Each roll is printed
+# ABOVE its Final Resolution line, uses "Aye:" rather than "Yea:", and the
+# unanimous one records the other side as "Nay: None."
+PRE_RESOLUTION_AYE_ITEM = """Motion & Voting
+Elections for the 2026 school board officers took place via nominations and roll call vote was as follows for
+President Nominees: Donald Cook, Meghin Margel. A roll call vote was taken for Director Cook as a nominee for President.
+The voting below was for Director Cook as President.
+Aye: Donald Cook, Andy Song
+Nay: Laura Williams, Teresa Gregory, Meghin Margel
+Final Resolution: Motion Fails.
+Elections for the 2026 school board officers took place via nominations and roll call vote was as follows for
+President Nominees: Donald Cook, Meghin Margel.
+A roll call vote was taken for Director Margel as a nominee for President.
+The voting below was for Director Margel as President.
+Aye: Laura Williams, Teresa Gregory, Meghin Margel
+Nay: Donald Cook, Andy Song
+Final Resolution: Motion Carries.
+Elections for the 2026 school board officers took place via nominations and roll call vote was as follows for
+Vice President Nominee: Teresa Gregory.
+A roll call vote was taken for Director Gregory as the sole nominee for Vice President.
+The voting below was for Director Gregory as Vice President.
+Aye: Donald Cook, Andy Song, Laura Williams, Teresa Gregory, Meghin Margel.
+Nay: None.
+Final Resolution: Motion Carries.
+Elections for the 2026 school board officers took place via nominations and roll call vote was as follows for
+Legislative Representative Nominees: Andy Song and Laura Williams.
+The voting below was for Director Song as Legislative Representative.
+Yea: Andy Song, Laura Williams, Teresa Gregory
+Nay: Donald Cook, Meghin Margel
+Final Resolution: Motion Carries
+"""
+
+
+class TestPreResolutionAyeRolls:
+    """A roll printed ABOVE its resolution still belongs to that motion.
+
+    Regression test for the 2025-12-10 board reorganization. The old parser
+    assumed the roll always follows the resolution, so every motion received
+    the FOLLOWING motion's roll -- a systematic off-by-one -- and "Nay: None."
+    produced a director named None.
+    """
+
+    def test_four_officer_elections_are_parsed(self):
+        """All four elections yield a motion with its own named roll."""
+        motions = parse_agenda_item(PRE_RESOLUTION_AYE_ITEM)
+        assert len(motions) == 4
+        assert [m.vote_format for m in motions] == ["named"] * 4
+
+    def test_each_election_gets_its_own_roll_not_the_next_ones(self):
+        """The off-by-one: motion 1 must not hold motion 2's roll."""
+        motions = parse_agenda_item(PRE_RESOLUTION_AYE_ITEM)
+        tallies = [(m.tally_yes, m.tally_no, m.tally_abstain) for m in motions]
+        assert tallies == [(2, 3, 0), (3, 2, 0), (5, 0, 0), (3, 2, 0)]
+
+    def test_cook_for_president_fails_two_to_three(self):
+        """Cook's own supporters are Cook and Song; the motion fails."""
+        m = parse_agenda_item(PRE_RESOLUTION_AYE_ITEM)[0]
+        assert m.disposition == "lost"
+        assert [v.director_raw for v in m.votes if v.vote == "yes"] == ["Donald Cook", "Andy Song"]
+        assert [v.director_raw for v in m.votes if v.vote == "no"] == [
+            "Laura Williams",
+            "Teresa Gregory",
+            "Meghin Margel",
+        ]
+
+    def test_aye_is_an_affirmative_label(self):
+        """'Aye:' counts as yes, not as an unrecognised label."""
+        m = parse_agenda_item(PRE_RESOLUTION_AYE_ITEM)[1]
+        assert m.disposition == "adopted"
+        assert m.tally_yes == 3
+        assert {v.director_raw for v in m.votes if v.vote == "yes"} == {
+            "Laura Williams",
+            "Teresa Gregory",
+            "Meghin Margel",
+        }
+
+    def test_nay_none_is_zero_votes_not_a_director(self):
+        """The unanimous Vice President election is 5-0, with nobody named None."""
+        m = parse_agenda_item(PRE_RESOLUTION_AYE_ITEM)[2]
+        names = [v.director_raw for v in m.votes]
+        assert "None" not in names
+        assert not any(n.lower().strip(" .") == "none" for n in names)
+        assert m.tally_yes == 5
+        assert m.tally_no == 0
+        assert len(m.votes) == 5
+
+    def test_locator_quotes_point_at_the_roll_above_the_resolution(self):
+        """Vote locators must cite the roll actually used, wherever it sits."""
+        for m in parse_agenda_item(PRE_RESOLUTION_AYE_ITEM):
+            for v in m.votes:
+                assert v.quote.lower().startswith(("aye:", "yea:", "nay:"))
+                assert v.director_raw.split()[-1] in v.quote
+
+    def test_a_post_resolution_roll_still_wins(self):
+        """Where a roll sits below the resolution, the look-back is not used."""
+        motions = parse_agenda_item(AGENDA_ITEM)
+        assert [m.tally_yes for m in motions] == [5, 1]
+        assert [m.tally_no for m in motions] == [0, 3]
+
+
+class TestNoneRollHandling:
+    """'None' after a vote label is a count of zero."""
+
+    @pytest.mark.parametrize("blob", ["None.", "None", "none", " NONE ", "None ."])
+    def test_none_yields_no_names(self, blob):
+        """Every spelling of an empty roll yields no director."""
+        from vote_parser import _split_names
+
+        assert _split_names(blob) == []
+
+    def test_a_real_name_is_not_dropped(self):
+        """Only a whole-roll 'None' is suppressed, never a substring."""
+        from vote_parser import _split_names
+
+        assert _split_names("Noneman Smith") == ["Noneman Smith"]
+        assert _split_names("Donald Cook, Andy Song") == ["Donald Cook", "Andy Song"]

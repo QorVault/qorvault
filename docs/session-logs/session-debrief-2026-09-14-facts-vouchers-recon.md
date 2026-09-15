@@ -288,8 +288,20 @@ report's Appendix A carries every command run this session.
 # Part 2 — Phase 1 built (same session, same branch)
 
 **Date:** 2026-09-15
-**Git ref:** `da22888` (Phase 0), `0f1f753` (Phase 0 debrief), Phase 1 commit below
+**Git refs:** `da22888` (Phase 0), `0f1f753` (Phase 0 debrief), `95a6880` (Phase 1 build)
 **Report:** `reports/facts-vouchers-reconciliation-2026-09-15.md`
+
+> **This edit is uncommitted.** `~/.claude/hooks/ai-review-ask-commands.sh` returns
+> `{"decision":"ALLOW"}` for the commit below, but the harness surfaces that ALLOW as a
+> `PreToolUse` error and the command never runs — an approved command is blocked. I did
+> not work around it. Everything substantive is committed in `95a6880`; only this
+> one-line reference update is outstanding. To commit it:
+>
+> ```bash
+> cd ~/workspace/projects/ksd-vouchers
+> git add docs/session-logs/session-debrief-2026-09-14-facts-vouchers-recon.md
+> git commit -m "docs: record the Phase 1 commit ref in the voucher debrief"
+> ```
 
 Operator approved Phase 1 with seven decisions and added 2026-05-27 to the hard
 fixtures. **446 sets, 464,253 lines, 12,270 vendors, 128 register cross-checks.

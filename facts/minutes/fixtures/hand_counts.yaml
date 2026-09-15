@@ -1,0 +1,127 @@
+# Operator hand counts for the minutes fact layer.
+#
+# WHY THIS FILE EXISTS
+# The parser is checked against itself everywhere else in this package. This is
+# the one independent check: a human opens the source PDF, counts the motions
+# by eye, and the fixture compares that count to what the parser produced. A
+# check the parser cannot influence is the only kind that can catch a parser
+# that is confidently wrong.
+#
+# HOW TO FILL IT IN
+# For each meeting below, open the PDF at `pdf_path`, count, and replace the
+# `null` values. Leave a value as `null` if you have not counted it yet --
+# the fixture stays BLOCKED until every meeting has a motions_total, and it
+# will tell you which ones are still missing.
+#
+#   motions_total     How many distinct motions the minutes record for this
+#                     meeting. Count a motion once even if it is amended or
+#                     re-stated before the vote.
+#   motions_adopted   Of those, how many carried / passed / were adopted.
+#   motions_lost      Of those, how many failed / were lost.
+#
+# The parser's own figures are shown as `parser_*` for context. They are NOT
+# the answer -- if your count differs, the parser is what gets investigated,
+# not your count.
+#
+# `parser_*` counts motions sourced from the MINUTES only. Motions sourced from
+# BoardDocs agenda items are deliberately excluded: you are counting the PDF in
+# front of you, and the agenda-item record is a separate source that records
+# the same meeting differently. Mixing them would compare a count of one
+# document against a count of two.
+#
+# Three meetings per format era, per the two eras Phase 0 identified:
+#   Era A  "Numbered motion"            2004-08-31 -> 2022-05-11
+#   Era B  "Roll call / passive motion" 2022-08-24 -> 2026-02-04
+#
+# NOTE ON MEETING TYPE
+# The three Era A meetings are recorded against a census row typed
+# work_study/special rather than regular. The minutes document itself is the
+# board meeting minutes for that date and carries motions; the type is a
+# census-slug artifact. Count the PDF, not the type. See the fixtures report
+# for why no substitute date was proposed.
+
+meetings:
+
+  - meeting_id: 2011-06-08:work_study
+    meeting_date: 2011-06-08
+    era: A
+    document_id: 80444646-57cf-4912-9143-c62db4af377b
+    title: Board_Meeting_Minutes_060811.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2011-06-22-regular-meeting-700-pm/Board_Meeting_Minutes_060811.pdf
+    page_count: 5
+    parser_motions_total: 6
+    parser_motions_adopted: 6
+    parser_motions_lost: 0
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null
+
+  - meeting_id: 2016-04-27:work_study
+    meeting_date: 2016-04-27
+    era: A
+    document_id: 29bd0888-38c6-45e0-9a72-5162a4792965
+    title: Board_Minutes_042716.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2016-05-11-regular-meeting-7-pm/Board_Minutes_042716.pdf
+    page_count: 5
+    parser_motions_total: 6
+    parser_motions_adopted: 6
+    parser_motions_lost: 0
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null
+
+  - meeting_id: 2019-06-12:special
+    meeting_date: 2019-06-12
+    era: A
+    document_id: 4652f94e-75c3-439c-9dd3-3694dc799683
+    title: Board Minutes 061219.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2019-06-26-regular-meeting-7-p-m-/9-01-b4ha7a7a4dba-minutes-of-the-12-june-2019-special-meeting-e/Board Minutes 061219.pdf
+    page_count: 6
+    parser_motions_total: 11
+    parser_motions_adopted: 11
+    parser_motions_lost: 0
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null
+
+  - meeting_id: 2023-05-24:regular
+    meeting_date: 2023-05-24
+    era: B
+    document_id: 1a194cee-bbe5-4f28-b4fe-b3cc2b36220e
+    title: Board Minutes 052423.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2023-06-14-regular-meeting-6-30-p-m-/8-15-cs6vrt81e30e-minutes-of-24-may-2023-regular-meeting-specia/Board Minutes 052423.pdf
+    page_count: 3
+    parser_motions_total: 11
+    parser_motions_adopted: 11
+    parser_motions_lost: 0
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null
+
+  - meeting_id: 2024-09-11:regular
+    meeting_date: 2024-09-11
+    era: B
+    document_id: 87469e3a-8e4e-402b-b634-b93b4e3251ad
+    title: Board Minutes 2024 09 11.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2024-09-25-regular-meeting-6-30-p-m-/7-04-d96n2t5d7068-minutes-of-11-september-2024-regular-meeting-/Board Minutes 2024 09 11.pdf
+    page_count: 6
+    parser_motions_total: 8
+    parser_motions_adopted: 4
+    parser_motions_lost: 4
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null
+
+  - meeting_id: 2025-02-26:regular
+    meeting_date: 2025-02-26
+    era: B
+    document_id: af4c1f49-c35a-4d0d-b8e7-0a9ca7ca036a
+    title: Board Minutes 2025 02 26.pdf
+    pdf_path: /home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data/2025-03-12-regular-meeting-6-30-p-m-/9-12-dea5ql111fea-minutes-of-26-february-2025-regular-meeting-a/Board Minutes 2025 02 26.pdf
+    page_count: 4
+    parser_motions_total: 13
+    parser_motions_adopted: 12
+    parser_motions_lost: 1
+    motions_total: null
+    motions_adopted: null
+    motions_lost: null

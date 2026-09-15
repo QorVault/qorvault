@@ -7,11 +7,19 @@ from the corpus during Phase 0.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pytest
 from census import classify
 from dates import date_from_body, date_from_filename
+from fixtures import (
+    DISPOSITION_WORDS,
+    KNOWN_ATTENDANCE_VOTE_DISCREPANCIES,
+    _parse_scalar,
+    load_hand_counts,
+    unknown_attendance_vote_discrepancies,
+)
 from parsers import (
     detect_era,
     detect_meeting_type,
@@ -301,3 +309,165 @@ class TestMeetingType:
     def test_census_classify(self, slug, expected):
         """Cancellations and ceremonial appearances are not meetings."""
         assert classify(slug) == expected
+
+
+class TestDispositionStems:
+    """The disposition/quote match is by word stem, not whole word.
+
+    The record inflects the same verb differently in the minutes and in the
+    agenda items -- a motion recorded as ``withdrawn`` where the text says the
+    mover "withdrew" it. Matching whole words rejected quotes that plainly
+    evidenced the outcome.
+    """
+
+    @pytest.mark.parametrize(
+        "disposition,quote",
+        [
+            ("adopted", "Motion carried."),
+            ("adopted", "Final Resolution: Motion Carries"),
+            ("adopted", "The motion will carry on a voice vote."),
+            ("adopted", "The motion passed unanimously."),
+            ("adopted", "Motion passes 5-0."),
+            ("adopted", "on a motion to pass the consent agenda"),
+            ("adopted", "the Board adopted Revised Policy 3207"),
+            ("adopted", "moved to adopt the 2011-12 budget"),
+            ("lost", "The motion failed."),
+            ("lost", "Motion fails 2-3."),
+            ("lost", "the motion will fail without a second"),
+            ("lost", "The motion was lost."),
+            ("tabled", "The motion was tabled until June."),
+            ("tabled", "moved to table the item"),
+            ("withdrawn", "The mover withdrew the motion."),
+            ("withdrawn", "The motion was withdrawn."),
+            ("withdrawn", "Director Clark moved to withdraw the motion."),
+        ],
+    )
+    def test_stem_matches_inflection(self, disposition, quote):
+        """Every inflection of the disposition verb evidences the disposition."""
+        assert re.search(DISPOSITION_WORDS[disposition], quote, re.I)
+
+    @pytest.mark.parametrize(
+        "disposition,quote",
+        [
+            # The recommendation put TO the board is not evidence the board
+            # adopted it. Admitting "approve" would turn truncated citations
+            # green without any of them showing an outcome.
+            ("adopted", "Recommended Action That the Board of Directors approves the contracts"),
+            ("adopted", "Agenda Item Details Meeting Jun 26, 2019 - Regular Meeting - 7 p.m."),
+            # A disposition word for a DIFFERENT outcome must not match.
+            ("lost", "Motion carried."),
+            ("withdrawn", "Motion carried."),
+            ("tabled", "Motion carried."),
+        ],
+    )
+    def test_stem_rejects_non_evidence(self, disposition, quote):
+        """Text that does not show the outcome is not accepted as evidence."""
+        assert not re.search(DISPOSITION_WORDS[disposition], quote, re.I)
+
+
+class TestKnownAttendanceVoteDiscrepancies:
+    """The discrepancy fixture asserts nothing NEW appears, not that none exist."""
+
+    def test_known_meetings_are_not_reported_as_unknown(self):
+        """A discrepancy in a known meeting is accepted."""
+        rows = [("2023-12-13:regular", "2023-12-13:regular#a1", 4, 5, "board_transition")]
+        assert unknown_attendance_vote_discrepancies(rows) == []
+
+    def test_new_meeting_is_reported(self):
+        """A discrepancy outside the known-set is surfaced and fails the check."""
+        rows = [("2019-01-09:regular", "2019-01-09:regular#a1", 3, 5, None)]
+        unknown = unknown_attendance_vote_discrepancies(rows)
+        assert len(unknown) == 1
+        assert unknown[0]["meeting_id"] == "2019-01-09:regular"
+        assert unknown[0]["cause"] is None
+
+    def test_known_and_unknown_are_separated(self):
+        """Known rows are dropped and unknown rows kept, in one pass."""
+        rows = [
+            ("2022-06-29:special", "2022-06-29:special#a1", 1, 4, "presiding_only"),
+            ("2030-01-01:regular", "2030-01-01:regular#a1", 2, 5, None),
+            ("2025-02-11:special", "2025-02-11:special#a1", 4, 8, "parser_roll_bleed"),
+        ]
+        assert [u["meeting_id"] for u in unknown_attendance_vote_discrepancies(rows)] == ["2030-01-01:regular"]
+
+    def test_known_set_covers_exactly_the_six_diagnosed_meetings(self):
+        """The known-set is a closed list; growing it is a deliberate act."""
+        assert set(KNOWN_ATTENDANCE_VOTE_DISCREPANCIES) == {
+            "2022-06-29:special",
+            "2022-10-05:special",
+            "2023-11-08:regular",
+            "2023-12-13:regular",
+            "2024-07-10:special",
+            "2025-02-11:special",
+        }
+
+    def test_every_known_meeting_carries_a_cause(self):
+        """A known meeting with no cause would be an unexplained exemption."""
+        for meeting_id, (meeting_date, cause) in KNOWN_ATTENDANCE_VOTE_DISCREPANCIES.items():
+            assert cause, f"{meeting_id} has no cause"
+            assert meeting_id.startswith(meeting_date), f"{meeting_id} date mismatch"
+
+    def test_parser_defect_is_not_labelled_a_record_discrepancy(self):
+        """2025-02-11 is a parser bug and must stay visible as one."""
+        assert KNOWN_ATTENDANCE_VOTE_DISCREPANCIES["2025-02-11:special"][1] == "parser_roll_bleed"
+
+
+class TestHandCountFile:
+    """The hand-count fixture takes the operator's counts from a file."""
+
+    def test_template_lists_six_meetings_three_per_era(self):
+        """Phase 0 found two eras, so the split is three and three."""
+        targets = load_hand_counts()
+        assert len(targets) == 6
+        eras = [t["era"] for t in targets]
+        assert eras.count("A") == 3
+        assert eras.count("B") == 3
+
+    def test_every_target_has_a_resolvable_document_and_pdf(self):
+        """A target with no source document cannot be hand counted."""
+        for t in load_hand_counts():
+            assert t["document_id"]
+            assert t["pdf_path"]
+            assert isinstance(t["page_count"], int)
+            assert isinstance(t["parser_motions_total"], int)
+
+    def test_counts_start_empty_so_the_fixture_stays_blocked(self):
+        """The template ships with no counts; the fixture must not go green."""
+        for t in load_hand_counts():
+            assert t["motions_total"] is None
+
+    def test_scalar_parsing(self):
+        """Null becomes None, integers become int, text stays text."""
+        assert _parse_scalar("null") is None
+        assert _parse_scalar("") is None
+        assert _parse_scalar("12") == 12
+        assert _parse_scalar("0") == 0
+        assert _parse_scalar("A") == "A"
+        assert _parse_scalar('"Board Minutes.pdf"') == "Board Minutes.pdf"
+
+    def test_missing_file_yields_no_targets(self, tmp_path):
+        """An absent file is blocked, not a crash."""
+        assert load_hand_counts(str(tmp_path / "nope.yaml")) == []
+
+    def test_malformed_entry_raises(self, tmp_path):
+        """A malformed line fails loudly rather than silently losing a meeting."""
+        path = tmp_path / "bad.yaml"
+        path.write_text("meetings:\n  - meeting_id: x\n    this line has no colon\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_hand_counts(str(path))
+
+    def test_parses_values_and_comments(self, tmp_path):
+        """Inline comments are stripped and values typed."""
+        path = tmp_path / "ok.yaml"
+        path.write_text(
+            "# header\nmeetings:\n  - meeting_id: 2011-06-08:work_study  # a comment\n"
+            "    page_count: 5\n    motions_total: null\n"
+            "  - meeting_id: 2025-02-26:regular\n    motions_total: 13\n",
+            encoding="utf-8",
+        )
+        got = load_hand_counts(str(path))
+        assert len(got) == 2
+        assert got[0]["meeting_id"] == "2011-06-08:work_study"
+        assert got[0]["page_count"] == 5
+        assert got[0]["motions_total"] is None
+        assert got[1]["motions_total"] == 13

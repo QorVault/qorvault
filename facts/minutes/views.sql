@@ -98,6 +98,70 @@ FROM facts.meeting
 WHERE minutes_document_id IS NULL
 ORDER BY meeting_date, meeting_type;
 
+-- Motions where more directors voted than the minutes record as present.
+--
+-- This is a data-quality surface, not an error list. The check that used to
+-- assert "this never happens" now asserts something narrower and true: it
+-- never happens OUTSIDE a maintained known-set. Each known meeting carries the
+-- reason it differs, so a reader sees the cause rather than a bare count.
+--
+-- cause vocabulary:
+--   board_transition  -- the minutes record one board's roll and the votes
+--                        were cast by another (a seating meeting). Both
+--                        records are accurate; they describe different boards.
+--   attendance_short  -- the attendance list in the minutes omits a director
+--                        who is recorded voting later in the same meeting.
+--   presiding_only    -- the minutes record only the presiding officer, not
+--                        the full roll.
+--   status_excluded   -- a director marked absent/excused in the roll is
+--                        nonetheless recorded voting, so the "present" count
+--                        legitimately falls below the number of voters.
+--   parser_roll_bleed -- NOT a record discrepancy: a surname-only vote roll
+--                        belonging to an adjacent motion was attributed to
+--                        this one, inflating the tally. This is a live parser
+--                        defect, retained here so it stays visible rather
+--                        than being absorbed as a record quirk.
+--   NULL              -- a case not in the known-set. A NULL cause is a new
+--                        discrepancy and fails the hard fixture.
+CREATE OR REPLACE VIEW facts.attendance_vote_discrepancies AS
+WITH present AS (
+    SELECT meeting_id, count(*) AS n
+    FROM facts.attendance
+    WHERE status IN ('present', 'present_virtual', 'arrived_late', 'left_early')
+    GROUP BY meeting_id
+),
+known (meeting_id, cause) AS (
+    VALUES ('2022-06-29:special', 'presiding_only'),
+           ('2022-10-05:special', 'attendance_short'),
+           ('2023-11-08:regular', 'status_excluded'),
+           ('2023-12-13:regular', 'board_transition'),
+           ('2024-07-10:special', 'status_excluded'),
+           ('2025-02-11:special', 'parser_roll_bleed')
+)
+SELECT m.meeting_date,
+       m.meeting_type,
+       mo.meeting_id,
+       mo.motion_id,
+       mo.source,
+       p.n AS present_recorded,
+       coalesce(mo.tally_yes, 0) + coalesce(mo.tally_no, 0)
+         + coalesce(mo.tally_abstain, 0) AS cast_votes,
+       k.cause,
+       mo.locator_document_id,
+       mo.locator_page,
+       mo.locator_char_offset,
+       mo.locator_quote
+FROM facts.motion mo
+JOIN present p ON p.meeting_id = mo.meeting_id
+JOIN facts.meeting m ON m.meeting_id = mo.meeting_id
+LEFT JOIN known k ON k.meeting_id = mo.meeting_id
+WHERE (mo.tally_yes IS NOT NULL
+       OR mo.tally_no IS NOT NULL
+       OR mo.tally_abstain IS NOT NULL)
+  AND coalesce(mo.tally_yes, 0) + coalesce(mo.tally_no, 0)
+      + coalesce(mo.tally_abstain, 0) > p.n
+ORDER BY m.meeting_date, mo.motion_id;
+
 -- How much of the motion record carries no director names at all. This is the
 -- headline transparency measure: for most of the corpus the minutes record
 -- only "Motion carried."

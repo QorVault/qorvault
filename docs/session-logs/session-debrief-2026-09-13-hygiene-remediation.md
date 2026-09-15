@@ -1,7 +1,14 @@
-# Session Debrief — 2026-09-13 — hygiene remediation (four carried-over items)
+# Session Debrief — 2026-09-13/14 — hygiene remediation and legacy-scraper quarantine
 
-**Session scope**: Close four hygiene items flagged by the ingest degradation diagnostic and the Part 1 repair report — (a) the `.env` `POSTGRES_PASSWORD` that fails from the host, (b) `boarddocs-postgres` publishing `0.0.0.0:5432`, (c) the half-corpus working data tree that could be loaded by mistake, (d) write the production bind-address check list. Setup/hygiene only, with one explicit operator credential grant.
-**Branch/project**: `ksd-main` on Smeltor, branch `claude/feat-facts-minutes`. User-level only, no sudo. Report at `reports/hygiene-2026-09-13.md`.
+**Session scope**: Four hygiene items carried over from the ingest degradation diagnostic and the Part 1 repair report — (a) the `.env` `POSTGRES_PASSWORD` that fails from the host, (b) `boarddocs-postgres` publishing `0.0.0.0:5432`, (c) the half-corpus working data tree that could be loaded by mistake, (d) the production bind-address check list. Setup/hygiene only, with one explicit operator credential grant.
+
+Extended on separate operator approvals into: quarantine of the legacy flat scraper and its run log out of the authoritative corpus; a canonical `docs/data-paths.md`; corrections to the ingest degradation report; and environment setup for `document_processor`.
+
+**Branch/project**: `ksd-main` on Smeltor, branch `claude/feat-facts-minutes`. User-level only, no sudo. Report at `reports/hygiene-2026-09-13.md` (+ Addendum A1–A6).
+
+**Not in scope / tracked elsewhere**: Part 2 of the repair (steps a–d, including the embedding stage a2) is executed and verified in the repair session, not here. This session's only involvement was diagnosing why step a1's command produced no output, and confirming the a2 pre-flight invariant held before handing off.
+
+**Final state**: all four hygiene items closed; 2 of 13 open items closed within the session (2, 5), 1 resolved as moot (8), 10 remaining for the operator.
 
 ## Decisions
 
@@ -39,7 +46,17 @@ Nothing else on the host was touched.
 | `docs/data-paths.md` | New — canonical data locations, archive checksums, known-stale references |
 | `reports/hygiene-2026-09-13.md` | Addendum A1–A6 appended (append-only; §2 given a `SUPERSEDED` pointer) |
 
+**Environment setup (operator-approved, in support of repair step a1):**
+
+| Path | Change |
+|---|---|
+| `document_processor/venv/` | **Created** via the component's own `./setup.sh` — Python 3.14.3, 31 packages, **35/35 tests pass** |
+| `reports/ingest-degradation-2026-09-13.md` | *Correction C1* appended; §0.2 window and retention-table reading struck through |
+| `reports/ingest-repair-2026-09-13.md` | Addendum appended splitting step **a** into **a1**/**a2** |
+
 Net effect on the backup corpus: two files removed, nothing added. It now contains only its 1,684 meeting directories.
+
+**Commits (all signed, `status=G`):** `9dff46c`, `150436a`, `2eb0701`, `3367a72`, `86191cf`, `4f40487`, `ac7bd21`, plus this debrief. Nothing pushed — `git push` is hook-blocked and remains the operator's call.
 
 The guarded tree (`ksd-boarddocs-rag`) was read only via `grep`. Its `.env` was not touched. Production was not contacted. The backup corpus received **no new file and no tombstone** — the only change to it was the removal of the scraper.
 
@@ -224,4 +241,51 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
     - **The 71-record damage figure still stands.** 2005–2018 meetings were *already* flat in the corpus, so the flat `external_id` matched and `ON CONFLICT DO NOTHING` made those a genuine no-op. Collision required a meeting previously scraped *structured*, which in practice meant 2026 only. Wider blast radius, same record count.
     - **R1 and R4 Route 2 depend on this run's output.** Both parse `agenda.html` from `documents.content_raw`, and that HTML came from this scraper on 2026-02-22. Recovery remains sound — one consistent snapshot of intact BoardDocs markup — but it is **not an independent source**, and any systematic flaw in this run's capture is inherited by all 806. Worth a sampled spot-check against live BoardDocs before R4 goes bulk, folded into the 5 URL confirmations already gated on R4.
 
-    Per the project's append-only convention, publish as a correction rather than editing §0.2. Not written — this is a finding, not an authorised edit to a prior report.
+    Per the project's append-only convention, publish as a correction rather than editing §0.2. **Applied 2026-09-13** as *Correction C1* in `reports/ingest-degradation-2026-09-13.md` (commit `4f40487`) — original text struck through, not deleted.
+
+12. **NEW — nav-chrome capture traced to two scraper edits. Fix deferred to the rebuild's chunk-header pass.**
+
+    Found while assisting the step a1 dry run. Every chunk produced for the 48 agenda items carries a fixed ~25-token prefix of BoardDocs UI furniture:
+
+    ```
+    Previous / Next / Close / Print / Share Menu / Share on Twitter /
+    Share on Facebook / Share by Email / Copy link to clipboard / …
+    ```
+
+    **Scope is exactly two meetings.** Of 20,197 documents, **81** have this in `content_raw` — **33** from 2026-03-11 and **48** from 2026-03-25, and nothing else in the corpus. Before a1 only 33 chunks corpus-wide contained it (0.02% of 179,081).
+
+    **Cause — two scraper edits, dated by mtime:**
+
+    | Script | mtime | Affected meeting |
+    |---|---|---|
+    | `ksd_forensic/scripts/boarddocs_api_scrape.py` | `2026-03-11 14:37:15` | 2026-03-11 (33 docs) |
+    | `ksd_forensic/scripts/boarddocs_update.py` | `2026-03-25 16:35:32` | 2026-03-25 (48 docs) |
+
+    Each script's mtime falls on the same day as the meeting whose scrape captured page chrome, and no other meeting in a 21-year corpus is affected. Both are structured-format scrapers (camelCase keys, per-item subdirectories) and are unrelated to the 2026-02-22 flat-scraper incident — this is a second, independent capture defect.
+
+    **Severity: low, and lower than first assessed.** An initial reading of the dry-run previews put the boilerplate at 314–383 tokens per chunk; on inspecting stored chunk content that was wrong. The nav block is a constant ~25-token header, after which the chunk carries real searchable content — meeting name, date, category, subject, type and board goals. The 41 single-chunk documents (70–73 tokens) are short procedural items (`1.02 Call to Order`, `1.03 Roll Call`, `1.05 Welcome`), not truncated ones.
+
+    **Not fixed, deliberately.** Per operator direction the remedy belongs to the rebuild's chunk-header pass, not here. Two things to fold in when it runs:
+    - Strip nav elements in `document_processor`'s `strip_html` as a second line of defence, so a future capture defect cannot reach the chunk table.
+    - Fix the capture in both scrapers, or the next scrape of any meeting repeats it.
+
+    The 33 chunks from 2026-03-11 are already embedded and carry the same prefix; any cleanup should cover both dates, not just 2026-03-25.
+
+13. **NEW — conflict between this session's findings and Part 1 §Step 1 of the repair report. Flag only; not edited.**
+
+    `reports/ingest-repair-2026-09-13.md` (Part 1, §Step 1) states: *"the legacy scraper's source code is not on this host at all. There is nothing to re-trigger"* and *"**The legacy flat scraper is not on this host.**"*
+
+    **It was on this host.** This session located it, confirmed it on four independent signals, and archived it:
+
+    ```
+    found:  …/framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.py
+    now at: ~/workspace/archive/legacy-flat-scraper/boarddocs_scraper.py
+    sha256  877529ae3e6f3e9fdb20681a4decee54f5854d482a4a42557e24460e7d20539f
+    mtime   2026-02-22 07:07:05   (plus its 2.2 MB run log, same directory)
+    ```
+
+    **Why the Part 1 search missed it.** That search looked for the flat format's signature key `files_found` in `*.py` and reasoned over the four candidate scripts in `ksd_forensic/scripts/`. The file was not in a scripts directory — it sat *inside a data directory*, in the backup archive, which is why a code-oriented search did not surface it. This session found it by searching for `agenda.html` writers rather than by key name.
+
+    **What this changes.** Part 1's recurrence verdict — "No STOP condition applies… nothing to re-trigger" — rests on the scraper's absence. The scheduler half of that finding is unaffected and still holds (no cron, no timer, no unit references it). But the binary half is wrong: the scraper existed, was world-executable until `chmod a-x` on 2026-09-13, and remains runnable via `python3 <file>` regardless of the permission bit.
+
+    **Residual risk is now low but not nil.** Nothing schedules it, and it is out of the corpus and clearly labelled. It is still present and still functional. Recommend Part 1's Step 1 receive a dated correction pointing here, per the same append-only convention used for Correction C1 — **not written from this session**, since Part 2 is being executed elsewhere and editing that report mid-run would be unsafe.

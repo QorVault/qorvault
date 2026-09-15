@@ -23,12 +23,30 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import re
 from decimal import Decimal
 
 import db
 
 SAMPLE_SIZE = 300
 DEFAULT_SEED = 20260914
+
+# Cycles whose sample size is doubled, and why.
+#
+# 2026-07-22 is rendered with no inter-column whitespace at all, so its
+# figures reach these tables on the column geometry alone. Its signed
+# register is a scan with no text layer, so there is no second machine
+# readable source to check them against. The operator's trace-to-source is
+# the only independent check those numbers get, and it is worth twice as
+# many lines.
+DOUBLE_SAMPLE_CYCLES: dict[str, str] = {
+    "2026-07-22": (
+        "This packet prints no whitespace between its columns, so every figure here was read from the "
+        "characters' x coordinates alone, and the signed register for this meeting is a scan with no text "
+        "layer. There is no second machine-readable source for these numbers, so this sample is twice the "
+        "usual size and it is the only independent check they get."
+    ),
+}
 
 SETS_SQL = """
     SELECT set_id, meeting_date::text AS meeting_date, fund, stated_total,
@@ -42,8 +60,8 @@ SETS_SQL = """
 LINES_SQL = """
     SELECT line_seq, vendor_raw, check_date::text AS check_date, check_number,
            check_amount, invoice_amount, description, is_pcard,
-           is_payroll_warrant, is_credit, locator_page, locator_char_offset,
-           locator_quote
+           is_payroll_warrant, is_credit, reason_code, locator_page,
+           locator_char_offset, locator_quote
     FROM facts.voucher_line
     WHERE set_id = %s
     ORDER BY line_seq
@@ -60,6 +78,31 @@ def money(value: Decimal | None) -> str:
         A comma-grouped string, or an em dash.
     """
     return "—" if value is None else f"{value:,.2f}"
+
+
+def _filename(set_id: str) -> str:
+    """Turn a set id into a file name that cannot collide.
+
+    Args:
+        set_id: The set's identifier, e.g. ``2026-02-11:Permanent#2``.
+
+    Returns:
+        A file name, e.g. ``2026-02-11-Permanent-2.md``.
+    """
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", set_id.replace(":", "-").replace("#", "-")) + ".md"
+
+
+def sample_size(meeting_date: str, base: int) -> int:
+    """Return the sample size for a cycle.
+
+    Args:
+        meeting_date: ISO meeting date.
+        base: The default sample size.
+
+    Returns:
+        The size to draw.
+    """
+    return base * 2 if meeting_date in DOUBLE_SAMPLE_CYCLES else base
 
 
 def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
@@ -88,16 +131,18 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
     )
     add(f"- **Sample:** {drawn} of {set_row['line_count']:,} lines, seed `{seed}`")
     add("")
+    if set_row["meeting_date"] in DOUBLE_SAMPLE_CYCLES:
+        add(f"> **{DOUBLE_SAMPLE_CYCLES[set_row['meeting_date']]}**")
+        add("")
     add(
         "Open the source file at the page in each row and confirm the vendor, "
         "date, check number and both amounts match. Mark anything that does not."
     )
     add("")
     add(
-        "**If you find zero errors in 300 lines**, the error rate for this set is "
-        "below roughly 1% at 95% confidence (the rule of three: 3/300). Fewer than "
-        "300 lines gives a correspondingly weaker bound, and this says nothing "
-        "about any set not sampled."
+        f"**If you find zero errors in these {drawn} lines**, the error rate for this set is below roughly "
+        f"{3 / drawn:.1%} at 95% confidence (the rule of three: 3/{drawn}). A smaller sample gives a "
+        f"correspondingly weaker bound, and this says nothing about any set that was not sampled."
     )
     add("")
     add("| # | Page | Vendor | Check date | Check no. | Check amt | Invoice amt | Description | Flags |")
@@ -110,6 +155,8 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
             flags.append("payroll")
         if row["is_credit"]:
             flags.append("credit")
+        if row["reason_code"]:
+            flags.append(f"**{row['reason_code']}**")
         description = (row["description"] or "").replace("|", "\\|")[:70]
         vendor = row["vendor_raw"].replace("|", "\\|")
         add(
@@ -166,9 +213,14 @@ def main() -> int:
         # Seeded per set so adding a set does not reshuffle the others, and
         # so the operator can re-draw exactly the same sample later.
         rng = random.Random(f"{args.seed}:{set_row['set_id']}")  # noqa: S311 - sampling, not key material
-        drawn = min(args.size, len(lines))
+        drawn = min(sample_size(set_row["meeting_date"], args.size), len(lines))
         sample = sorted(rng.sample(lines, drawn), key=lambda r: r["line_seq"])
-        name = f"{set_row['meeting_date']}-{set_row['fund']}.md"
+        # Named from the set id, not from (date, fund). Two listings for
+        # the same fund and meeting do occur -- 2026-02-11 carries two
+        # Permanent Fund sets whose contents differ -- and naming the file
+        # after the fund alone made the second silently overwrite the
+        # first, which is a sample file the operator never got to see.
+        name = _filename(set_row["set_id"])
         path = os.path.join(args.out, name)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(render(set_row, sample, args.seed, drawn))
@@ -177,7 +229,10 @@ def main() -> int:
     for path, drawn, total in written:
         print(f"wrote {path}  ({drawn} of {total} lines)")
     print(f"\n{len(written)} sample file(s), seed {args.seed}")
-    print("Accept-on-zero: 0 errors in 300 sampled lines puts that set's error rate below about 1% at 95% confidence.")
+    print(
+        "Accept-on-zero: 0 errors in n sampled lines puts that set's error rate below about 3/n "
+        "at 95% confidence. Cycles in DOUBLE_SAMPLE_CYCLES are drawn at twice the size."
+    )
     return 0
 
 

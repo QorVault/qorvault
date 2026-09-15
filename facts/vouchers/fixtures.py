@@ -90,6 +90,118 @@ HARD_GF_COMPONENTS = {
     "payroll_amount": Decimal("1513.50"),
 }
 
+# Individual printed lines, each traced to a value printed on the staged
+# PDF. These are the R1 fixtures: every one of them was read wrongly by the
+# regex parser because the amount column had no right-hand edge in the
+# extracted text, and every one of them is a figure a reader could check
+# against the document in under a minute.
+HARD_LINES: tuple[dict, ...] = (
+    {
+        "name": "2026-06-24 ASB 418449 Head Quarters Corp, the 240 line",
+        "meeting_date": "2026-06-24",
+        "fund": "ASB",
+        "check_number": "418449",
+        "vendor_like": "%Head Quarters%",
+        "check_amount": Decimal("355.00"),
+        "invoice_amount": Decimal("240.00"),
+        "note": "printed: check 355, invoice 240, '2 Standard Portable Toilets for KM Athletics Use'. "
+        "The regex parser read check 355240.00 and invoice 2.00.",
+    },
+    {
+        "name": "2026-06-24 ACH 9252601789 Pacifica Law Group, the 106 line",
+        "meeting_date": "2026-06-24",
+        "fund": "ACH",
+        "check_number": "9252601789",
+        "vendor_like": "%Pacifica%",
+        "check_amount": Decimal("40817.50"),
+        "invoice_amount": Decimal("106.00"),
+        "note": "printed invoice 106, not -10,625.00. The description begins '25-26' and this corpus "
+        "writes some negatives with a trailing minus, so '106 25-' read as a credit.",
+    },
+    {
+        "name": "2026-06-24 ACH 9252601789 Pacifica Law Group, the 53 line",
+        "meeting_date": "2026-06-24",
+        "fund": "ACH",
+        "check_number": "9252601789",
+        "vendor_like": "%Pacifica%",
+        "check_amount": Decimal("40817.50"),
+        "invoice_amount": Decimal("53.00"),
+        "note": "printed invoice 53, not -5,325.00.",
+    },
+    {
+        "name": "2026-06-24 GF 608288 GRMEA-Enumclaw HS, the 700 line",
+        "meeting_date": "2026-06-24",
+        "fund": "GF",
+        "check_number": "608288",
+        "vendor_like": "%GRMEA%",
+        "check_amount": Decimal("760.00"),
+        "invoice_amount": Decimal("700.00"),
+        "note": "printed: check 760, invoice 700. The regex parser read check 760700.00 and invoice 2.00.",
+    },
+    {
+        "name": "2026-06-24 GF 608502 UW Botanic Gardens",
+        "meeting_date": "2026-06-24",
+        "fund": "GF",
+        "check_number": "608502",
+        "vendor_like": "%Botanic%",
+        "check_amount": Decimal("388.00"),
+        "invoice_amount": Decimal("388.00"),
+        "note": "printed: check 388, invoice 388. The regex parser read check 388388.00 and invoice 2.00.",
+    },
+)
+
+# Whole checks whose invoice lines must sum to the check amount printed on
+# every one of those lines. This is the document's own arithmetic.
+#
+# line_count for check 9252601789 is 12, read off the document. The build
+# brief says 13; 2026-06-24 ACH prints twelve rows carrying that check
+# number, eleven on page 27 and one on page 28, and those twelve sum to
+# 40,817.50 exactly. The deviation is reported, and the assertion is
+# anchored on the printed check amount rather than on the count.
+HARD_CHECKS: tuple[dict, ...] = (
+    {
+        "name": "2026-06-24 ACH 9252601789 Pacifica Law Group",
+        "meeting_date": "2026-06-24",
+        "fund": "ACH",
+        "check_number": "9252601789",
+        "check_amount": Decimal("40817.50"),
+        "line_count": 12,
+    },
+    {
+        "name": "2026-06-24 GF 608288 GRMEA-Enumclaw HS",
+        "meeting_date": "2026-06-24",
+        "fund": "GF",
+        "check_number": "608288",
+        "check_amount": Decimal("760.00"),
+        "line_count": 3,
+    },
+    {
+        "name": "2026-06-24 GF 608502 UW Botanic Gardens",
+        "meeting_date": "2026-06-24",
+        "fund": "GF",
+        "check_number": "608502",
+        "check_amount": Decimal("388.00"),
+        "line_count": 1,
+    },
+    {
+        "name": "2026-06-24 ASB 418449 Head Quarters Corp",
+        "meeting_date": "2026-06-24",
+        "fund": "ASB",
+        "check_number": "418449",
+        "check_amount": Decimal("355.00"),
+        "line_count": 2,
+    },
+)
+
+# 2026-07-22 is the packet rendered with no inter-column whitespace at all.
+# Every printed row must land in the table carrying either an amount or a
+# reason code: a row that is on the page and not in the table is a silent
+# drop, and this fixture exists to make that impossible to ship.
+HARD_NO_SILENT_DROPS: tuple[dict, ...] = (
+    {"meeting_date": "2026-07-22", "fund": "ACH", "rows": 1541},
+    {"meeting_date": "2026-07-22", "fund": "Capital", "rows": 12},
+)
+
 # The cumulative-listing fixture the operator asked for. The 2021-02-10 and
 # 2021-03-10 Transportation listings both total 1,175,094.00 while their
 # recaps state 783,396.00 and 391,698.00 -- and those two sum to the third.
@@ -357,6 +469,133 @@ def check_gf_components(suite: Suite, sets: dict) -> None:
         suite.add(Result(name, "PASS", "three components", "all three match"))
 
 
+def check_hard_lines(suite: Suite, sets: dict) -> None:
+    """Assert individual printed lines, as printed.
+
+    Args:
+        suite: Suite to record into.
+        sets: Loaded voucher sets.
+    """
+    for spec in HARD_LINES:
+        name = f"hard_line {spec['name']}"
+        if (spec["meeting_date"], spec["fund"]) not in sets:
+            suite.add(Result(name, "BLOCKED", str(spec["invoice_amount"]), "no set"))
+            continue
+        rows = db.query_dicts(
+            """
+            SELECT l.check_amount, l.invoice_amount, l.description, l.reason_code, l.locator_page
+            FROM facts.voucher_line l
+            JOIN facts.voucher_set s ON s.set_id = l.set_id
+            WHERE s.meeting_date = %s AND s.fund = %s AND l.check_number = %s AND l.vendor_raw ILIKE %s
+            ORDER BY l.line_seq
+            """,
+            (spec["meeting_date"], spec["fund"], spec["check_number"], spec["vendor_like"]),
+        )
+        expected = f"a line with check {spec['check_amount']} and invoice {spec['invoice_amount']}"
+        hit = next(
+            (
+                r
+                for r in rows
+                if r["check_amount"] == spec["check_amount"]
+                and r["invoice_amount"] == spec["invoice_amount"]
+                and r["reason_code"] is None
+            ),
+            None,
+        )
+        if hit is not None:
+            suite.add(Result(name, "PASS", expected, f"page {hit['locator_page']}: {hit['description']}"[:120]))
+        else:
+            seen = ", ".join(f"check {r['check_amount']}/invoice {r['invoice_amount']}" for r in rows[:6]) or "no lines"
+            suite.add(Result(name, "FAIL", expected, seen, spec["note"]))
+
+
+def check_hard_checks(suite: Suite, sets: dict) -> None:
+    """Assert that a check's lines sum to the check amount printed on them.
+
+    This is the document's own arithmetic, not an assumption: every row of
+    a multi-invoice check repeats the same check amount, and the invoices
+    against it must add up to it.
+
+    Args:
+        suite: Suite to record into.
+        sets: Loaded voucher sets.
+    """
+    for spec in HARD_CHECKS:
+        name = f"hard_check {spec['name']}"
+        if (spec["meeting_date"], spec["fund"]) not in sets:
+            suite.add(Result(name, "BLOCKED", str(spec["check_amount"]), "no set"))
+            continue
+        rows = db.query_dicts(
+            """
+            SELECT count(*) AS lines,
+                   count(DISTINCT l.check_amount) AS distinct_check_amounts,
+                   min(l.check_amount) AS check_amount,
+                   COALESCE(sum(l.invoice_amount), 0) AS invoice_sum,
+                   count(*) FILTER (WHERE l.reason_code IS NOT NULL) AS unread
+            FROM facts.voucher_line l
+            JOIN facts.voucher_set s ON s.set_id = l.set_id
+            WHERE s.meeting_date = %s AND s.fund = %s AND l.check_number = %s
+            """,
+            (spec["meeting_date"], spec["fund"], spec["check_number"]),
+        )
+        row = rows[0]
+        problems = []
+        if row["distinct_check_amounts"] != 1 or row["check_amount"] != spec["check_amount"]:
+            problems.append(
+                f"check amount {row['check_amount']} over {row['distinct_check_amounts']} distinct value(s), "
+                f"expected exactly {spec['check_amount']}"
+            )
+        if row["invoice_sum"] != spec["check_amount"]:
+            problems.append(f"invoice lines sum to {row['invoice_sum']}, not {spec['check_amount']}")
+        if spec["line_count"] is not None and row["lines"] != spec["line_count"]:
+            problems.append(f"{row['lines']} lines, expected {spec['line_count']}")
+        if row["unread"]:
+            problems.append(f"{row['unread']} line(s) carry a reason code")
+        expected = f"{spec['line_count'] or 'all'} lines summing to {spec['check_amount']}"
+        if problems:
+            suite.add(Result(name, "FAIL", expected, "; ".join(problems)))
+        else:
+            suite.add(Result(name, "PASS", expected, f"{row['lines']} lines, sum {row['invoice_sum']}"))
+
+
+def check_no_silent_drops(suite: Suite, sets: dict) -> None:
+    """Assert every printed row is in the table with an amount or a reason.
+
+    Args:
+        suite: Suite to record into.
+        sets: Loaded voucher sets.
+    """
+    for spec in HARD_NO_SILENT_DROPS:
+        name = f"hard_no_silent_drops {spec['meeting_date']} {spec['fund']}"
+        row = sets.get((spec["meeting_date"], spec["fund"]))
+        if row is None:
+            suite.add(Result(name, "BLOCKED", f"{spec['rows']} rows", "no set"))
+            continue
+        counts = db.query_dicts(
+            """
+            SELECT count(*) AS rows,
+                   count(*) FILTER (WHERE l.invoice_amount IS NOT NULL AND l.reason_code IS NULL) AS with_amount,
+                   count(*) FILTER (WHERE l.reason_code IS NOT NULL) AS with_reason,
+                   count(*) FILTER (WHERE l.invoice_amount IS NULL AND l.reason_code IS NULL) AS neither
+            FROM facts.voucher_line l
+            JOIN facts.voucher_set s ON s.set_id = l.set_id
+            WHERE s.meeting_date = %s AND s.fund = %s
+            """,
+            (spec["meeting_date"], spec["fund"]),
+        )[0]
+        problems = []
+        if counts["rows"] != spec["rows"]:
+            problems.append(f"{counts['rows']} rows in the table, {spec['rows']} printed")
+        if counts["neither"]:
+            problems.append(f"{counts['neither']} row(s) carry neither an amount nor a reason code")
+        expected = f"{spec['rows']} rows, each with an amount or a reason code"
+        actual = f"{counts['rows']} rows: {counts['with_amount']} with an amount, {counts['with_reason']} with a reason"
+        if problems:
+            suite.add(Result(name, "FAIL", expected, actual, "; ".join(problems)))
+        else:
+            suite.add(Result(name, "PASS", expected, actual))
+
+
 def check_cumulative(suite: Suite, sets: dict) -> None:
     """Assert the cumulative-listing arithmetic and that it is flagged.
 
@@ -527,6 +766,9 @@ def run() -> Suite:
     suite = Suite()
     sets = _sets_present()
     check_hard_set_totals(suite, sets)
+    check_hard_lines(suite, sets)
+    check_hard_checks(suite, sets)
+    check_no_silent_drops(suite, sets)
     check_pre_2024(suite, sets)
     check_gf_components(suite, sets)
     check_cumulative(suite, sets)

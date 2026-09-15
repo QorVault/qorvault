@@ -524,13 +524,14 @@ def _set(set_id: str, lines: list[dict], stated: Decimal | None, extra=None) -> 
     return row
 
 
-def _line(number: str, check: str, invoice: str) -> dict:
+def _line(number: str, check: str, invoice: str, reason: str | None = None) -> dict:
     """Build a minimal line dict.
 
     Args:
         number: Check number.
         check: Check amount.
         invoice: Invoice amount.
+        reason: Row-level reason code, when the row could not be read.
 
     Returns:
         A line dict with the fields summarize reads.
@@ -539,6 +540,7 @@ def _line(number: str, check: str, invoice: str) -> dict:
         "check_number": number,
         "check_amount": Decimal(check),
         "invoice_amount": Decimal(invoice),
+        "reason_code": reason,
     }
 
 
@@ -573,6 +575,31 @@ class TestSummarize:
         summarize(row)
         assert row.reconciled is None
         assert row.reason_code == "TOTAL_NOT_FOUND"
+
+    def test_an_unread_row_is_held_but_never_summed(self):
+        """A row with a reason code is counted, not added and not dropped.
+
+        Adding it would invent money; dropping it would hide a printed
+        payment. It is held with its reason and excluded from every total.
+        """
+        row = _set(
+            "s",
+            [_line("1", "10.00", "6.00"), _line("2", "99.00", "99.00", reason="COLUMN_AMBIGUOUS")],
+            Decimal("6.00"),
+        )
+        summarize(row)
+        assert row.unread_lines == 1
+        assert row.parsed_total == Decimal("6.00")
+        assert row.check_count == 1
+        assert row.reconciled is True
+        assert "could not be assigned to columns" in " ".join(row.notes)
+
+    def test_a_set_whose_every_row_is_unread_is_flagged(self):
+        """Zero readable rows is not a reconciled set at zero."""
+        row = _set("s", [_line("1", "10.00", "10.00", reason="COLUMN_AMBIGUOUS")], Decimal("10.00"))
+        summarize(row)
+        assert row.reconciled is False
+        assert row.reason_code == "COLUMN_AMBIGUOUS"
 
     def test_zero_rows_is_a_regex_miss(self):
         """No rows at all is a parser failure, and says so."""

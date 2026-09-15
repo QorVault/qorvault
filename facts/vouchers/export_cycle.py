@@ -58,28 +58,39 @@ WATCH_CYCLES = 12
 MAX_LINES = 300
 
 SETS_SQL = """
-    SELECT set_id, fund, stated_total, parsed_total, sum_check_dedup,
-           line_count, check_count, hash_total, reconciled, delta, reason_code,
-           status, notes, period_start, period_end, pcard_period_start,
-           pcard_period_end, source, locator_file_path, locator_page,
-           locator_quote, dan
-    FROM facts.set_totals
-    WHERE meeting_date = %s
-    ORDER BY fund
+    SELECT t.set_id, t.fund, t.stated_total, t.parsed_total, t.sum_check_dedup,
+           t.line_count, t.check_count, t.hash_total, t.reconciled, t.delta,
+           t.reason_code, t.status, t.notes, t.period_start, t.period_end,
+           t.pcard_period_start, t.pcard_period_end, t.source,
+           t.locator_file_path, t.locator_page, t.locator_quote, t.dan,
+           d.parsed_total_new_checks, d.restated_from_earlier,
+           d.restated_lines, d.restated_checks, d.unread_lines,
+           a.reason        AS crosscheck_reason,
+           a.has_crosscheck,
+           a.crosscheck_note
+    FROM facts.set_totals t
+    JOIN facts.set_totals_deduped     d ON d.set_id = t.set_id
+    LEFT JOIN facts.register_availability a ON a.set_id = t.set_id
+    WHERE t.meeting_date = %s
+    ORDER BY t.fund
 """
 
 VENDORS_SQL = """
     SELECT l.vendor_raw, l.vendor_norm,
-           sum(l.invoice_amount)          AS invoice_total,
-           count(*)                       AS line_count,
-           count(DISTINCT l.check_number) AS check_count,
-           bool_and(s.reconciled IS TRUE) AS all_reconciled,
-           min(l.locator_page)            AS first_page
-    FROM facts.voucher_line l
-    JOIN facts.voucher_set  s ON s.set_id = l.set_id
-    WHERE s.meeting_date = %s
+           sum(l.invoice_amount) FILTER (WHERE l.reason_code IS NULL)  AS invoice_total,
+           sum(l.invoice_amount) FILTER (
+               WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check)
+                                                                       AS invoice_total_new_checks,
+           count(*) FILTER (WHERE l.reason_code IS NULL)               AS line_count,
+           count(DISTINCT l.check_number)                              AS check_count,
+           count(*) FILTER (WHERE l.reason_code IS NOT NULL)           AS unread_lines,
+           bool_and(l.reconciled IS TRUE)                              AS all_reconciled,
+           min(l.locator_page)                                         AS first_page
+    FROM facts.voucher_line_deduped l
+    WHERE l.meeting_date = %s
     GROUP BY l.vendor_raw, l.vendor_norm
-    ORDER BY sum(l.invoice_amount) DESC
+    HAVING sum(l.invoice_amount) FILTER (WHERE l.reason_code IS NULL) IS NOT NULL
+    ORDER BY sum(l.invoice_amount) FILTER (WHERE l.reason_code IS NULL) DESC
 """
 
 CYCLES_SQL = """
@@ -91,11 +102,11 @@ CYCLES_SQL = """
 """
 
 WATCH_SQL = """
-    SELECT s.meeting_date::text AS meeting_date,
-           sum(l.invoice_amount) AS invoice_total
-    FROM facts.voucher_line l
-    JOIN facts.voucher_set  s ON s.set_id = l.set_id
-    WHERE s.meeting_date = ANY(%s::date[])
+    SELECT l.meeting_date::text AS meeting_date,
+           sum(l.invoice_amount) FILTER (
+               WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check) AS invoice_total
+    FROM facts.voucher_line_deduped l
+    WHERE l.meeting_date = ANY(%s::date[])
       AND l.vendor_raw ILIKE %s
     GROUP BY 1
 """
@@ -107,6 +118,29 @@ RECON_SQL = """
     WHERE meeting_date = %s
     ORDER BY fund, basis
 """
+
+
+def _crosscheck(row: dict) -> str:
+    """Describe whether a set has an independent register cross-check.
+
+    Stated per set rather than left to a reader to notice. The signed
+    registers for 2026-06-24 and 2026-07-22 are scans with no text layer,
+    so those two nights have no second opinion on this machine and the
+    listing is the only machine-readable source for them.
+
+    Args:
+        row: A set row carrying the cross-check reason.
+
+    Returns:
+        A short phrase for the table cell.
+    """
+    return {
+        "MATCH": "yes — ties to the signed register",
+        "REGISTER_MISMATCH": "yes — differs from the signed register",
+        "SCOPE_DIFFERS": "Warrant Recap only (wider scope)",
+        "REGISTER_NO_TEXT": "**none** — register is a scan with no text layer",
+        "REGISTER_NOT_FOUND": "**none** — no register on this machine",
+    }.get(row["crosscheck_reason"], "**none recorded**")
 
 
 def money(value: Decimal | None) -> str:
@@ -198,17 +232,16 @@ def render(cycle: dict) -> str:
     # ---------------------------------------------------------- set totals --
     add("## Set totals")
     add("")
-    add("| Fund | Stated total | Parsed total | Lines | Checks | Status | Period | Page |")
-    add("|---|---:|---:|---:|---:|---|---|---:|")
+    add("| Fund | Stated total | Parsed total | Lines | Held | Checks | Status | Register cross-check | Page |")
+    add("|---|---:|---:|---:|---:|---:|---|---|---:|")
     grand_reconciled = Decimal("0")
     any_unreconciled = False
     for row in cycle["sets"]:
-        period = f"{row['period_start']} → {row['period_end']}" if row["period_start"] and row["period_end"] else "—"
         add(
             f"| {row['fund']} | {money(row['stated_total'])} | "
             f"{money(row['parsed_total'])} | {row['line_count']:,} | "
-            f"{row['check_count']:,} | {row['status']} | {period} | "
-            f"{row['locator_page'] or '—'} |"
+            f"{row['unread_lines'] or 0:,} | {row['check_count']:,} | {row['status']} | "
+            f"{_crosscheck(row)} | {row['locator_page'] or '—'} |"
         )
         if row["reconciled"] is True:
             grand_reconciled += row["parsed_total"] or Decimal("0")
@@ -216,6 +249,35 @@ def render(cycle: dict) -> str:
             any_unreconciled = True
     add("")
     add(f"**Total across sets that reconcile: {money(grand_reconciled)}**")
+    periods = [
+        f"{r['fund']} {r['period_start']} → {r['period_end']}"
+        for r in cycle["sets"]
+        if r["period_start"] and r["period_end"]
+    ]
+    if periods:
+        add("")
+        add("Warrant periods: " + "; ".join(periods) + ".")
+    held = sum(r["unread_lines"] or 0 for r in cycle["sets"])
+    if held:
+        add("")
+        add(
+            f"**Held:** {held:,} printed row(s) across these sets could not be assigned to columns and are "
+            f"excluded from every total above. They are not lost: each is in `facts.unread_lines` with the "
+            f"page it is on and the reason it could not be read."
+        )
+    restated = [r for r in cycle["sets"] if (r["restated_lines"] or 0) > 0]
+    if restated:
+        add("")
+        add(
+            "**Already counted at an earlier meeting:** "
+            + "; ".join(
+                f"{r['fund']} {money(r['restated_from_earlier'])} on {r['restated_checks']:,} check(s)"
+                for r in restated
+            )
+            + ". These listings restate warrants from earlier cycles. Adding this cycle's totals to an "
+            "earlier cycle's counts that money twice; the deduplicated figure is in "
+            "`facts.set_totals_deduped.parsed_total_new_checks`."
+        )
     if any_unreconciled:
         add("")
         add(
@@ -269,11 +331,12 @@ def render(cycle: dict) -> str:
     publishable, withheld, withheld_total = exportable_vendors(cycle["vendors"])
     add(f"## Top {TOP_VENDORS} vendors this cycle")
     add("")
-    add("| Vendor | Invoice total | Lines | Checks | From reconciled sets |")
-    add("|---|---:|---:|---:|---|")
+    add("| Vendor | Invoice total | Of which new checks | Lines | Checks | From reconciled sets |")
+    add("|---|---:|---:|---:|---:|---|")
     for row in publishable[:TOP_VENDORS]:
         add(
             f"| {row['vendor_raw']} | {money(row['invoice_total'])} | "
+            f"{money(row['invoice_total_new_checks'])} | "
             f"{row['line_count']:,} | {row['check_count']:,} | "
             f"{'yes' if row['all_reconciled'] else 'NO'} |"
         )

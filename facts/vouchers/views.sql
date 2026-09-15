@@ -245,3 +245,182 @@ ORDER BY s.meeting_date, s.fund, r.basis;
 
 COMMENT ON VIEW facts.register_crosschecks IS
     'Every listing checked against the board''s signed register, with both locators.';
+
+-- ================================================== cross-cycle dedupe ==
+-- Some listings restate earlier cycles. 145 sets across five funds carry
+-- check numbers that already appeared in an earlier set of the same fund,
+-- and summing those sets across meetings counts the same warrant twice.
+-- facts.cumulative_sets says WHICH sets do it; these views say how much
+-- money it is and give a total that is safe to add up across cycles.
+--
+-- The dedupe key is (fund, check_number). Check numbers are issued per
+-- warrant series, so the same number in two different funds is two
+-- different payments and must not be collapsed.
+--
+-- Rows that could not be read are excluded from the key: a row with a
+-- reason code has no reliable check number to deduplicate on.
+
+-- ------------------------------------------------------ check_first_cycle --
+CREATE OR REPLACE VIEW facts.check_first_cycle AS
+SELECT DISTINCT ON (s.fund, l.check_number)
+       s.fund,
+       l.check_number,
+       s.meeting_date                          AS first_meeting_date,
+       s.set_id                                AS first_set_id
+FROM facts.voucher_line l
+JOIN facts.voucher_set  s ON s.set_id = l.set_id
+WHERE l.check_number IS NOT NULL
+  AND l.reason_code IS NULL
+ORDER BY s.fund, l.check_number, s.meeting_date, s.set_id;
+
+COMMENT ON VIEW facts.check_first_cycle IS
+    'The earliest voucher night that printed each (fund, check number).';
+
+-- ---------------------------------------------------- voucher_line_deduped --
+CREATE OR REPLACE VIEW facts.voucher_line_deduped AS
+SELECT l.line_id,
+       l.set_id,
+       s.meeting_date,
+       s.fund,
+       l.line_seq,
+       l.vendor_raw,
+       l.vendor_norm,
+       l.check_date,
+       l.check_number,
+       l.check_amount,
+       l.invoice_amount,
+       l.description,
+       l.is_pcard,
+       l.is_payroll_warrant,
+       l.is_person_shaped,
+       l.is_credit,
+       l.reason_code,
+       l.reason_detail,
+       -- True when this is the first voucher night to print this check, so
+       -- the row may be added into a cross-cycle total. False means the
+       -- money is real but was already counted at an earlier meeting.
+       (f.first_set_id IS NULL OR f.first_set_id = l.set_id) AS is_first_cycle_for_check,
+       f.first_meeting_date,
+       s.reconciled,
+       s.reason_code                            AS set_reason_code,
+       l.source,
+       l.locator_file_path,
+       l.locator_file_sha256,
+       l.locator_page,
+       l.locator_char_offset,
+       l.locator_quote
+FROM facts.voucher_line l
+JOIN facts.voucher_set  s ON s.set_id = l.set_id
+LEFT JOIN facts.check_first_cycle f
+       ON f.fund = s.fund AND f.check_number = l.check_number;
+
+COMMENT ON VIEW facts.voucher_line_deduped IS
+    'Every voucher line, flagged with whether its check first appears in this cycle.';
+
+-- ------------------------------------------------------ set_totals_deduped --
+CREATE OR REPLACE VIEW facts.set_totals_deduped AS
+SELECT s.set_id,
+       s.meeting_date,
+       s.fund,
+       s.stated_total,
+       s.parsed_total,
+       COALESCE(sum(l.invoice_amount) FILTER (
+           WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check), 0)  AS parsed_total_new_checks,
+       COALESCE(sum(l.invoice_amount) FILTER (
+           WHERE l.reason_code IS NULL AND NOT l.is_first_cycle_for_check), 0) AS restated_from_earlier,
+       count(*) FILTER (WHERE NOT l.is_first_cycle_for_check)               AS restated_lines,
+       count(DISTINCT l.check_number) FILTER (
+           WHERE NOT l.is_first_cycle_for_check)                            AS restated_checks,
+       count(*) FILTER (WHERE l.reason_code IS NOT NULL)                    AS unread_lines,
+       s.line_count,
+       s.check_count,
+       s.reconciled,
+       s.delta,
+       s.reason_code
+FROM facts.voucher_set s
+LEFT JOIN facts.voucher_line_deduped l ON l.set_id = s.set_id
+GROUP BY s.set_id, s.meeting_date, s.fund, s.stated_total, s.parsed_total,
+         s.line_count, s.check_count, s.reconciled, s.delta, s.reason_code;
+
+COMMENT ON VIEW facts.set_totals_deduped IS
+    'Per set: the printed total, the parsed total, and how much of it was already counted at an earlier meeting.';
+
+-- ------------------------------------------------ vendor_by_cycle_deduped --
+CREATE OR REPLACE VIEW facts.vendor_by_cycle_deduped AS
+SELECT l.meeting_date,
+       l.fund,
+       l.vendor_norm,
+       v.display_name,
+       v.is_person_shaped,
+       count(*)                                                    AS line_count,
+       count(DISTINCT l.check_number)                              AS check_count,
+       sum(l.invoice_amount) FILTER (WHERE l.reason_code IS NULL)  AS invoice_total,
+       sum(l.invoice_amount) FILTER (
+           WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check) AS invoice_total_new_checks,
+       count(*) FILTER (WHERE l.reason_code IS NOT NULL)           AS unread_lines,
+       l.reconciled,
+       l.set_reason_code
+FROM facts.voucher_line_deduped l
+LEFT JOIN facts.vendor v ON v.vendor_norm = l.vendor_norm
+GROUP BY l.meeting_date, l.fund, l.vendor_norm, v.display_name,
+         v.is_person_shaped, l.reconciled, l.set_reason_code;
+
+COMMENT ON VIEW facts.vendor_by_cycle_deduped IS
+    'Vendor spend per cycle per fund, with the part already counted at an earlier meeting separated out.';
+
+-- --------------------------------------------------- register_availability --
+-- Whether a set has an independent register cross-check at all, as a fact
+-- per set rather than as an absence a reader has to notice. The signed
+-- registers for 2026-06-24 and 2026-07-22 are scans with no text layer, so
+-- those two nights have no second opinion on this machine and an export
+-- that did not say so would be overstating its evidence.
+CREATE OR REPLACE VIEW facts.register_availability AS
+SELECT s.set_id,
+       s.meeting_date,
+       s.fund,
+       r.basis,
+       r.reason,
+       r.register_total,
+       r.detail_total,
+       r.delta,
+       r.match,
+       (r.reason IN ('MATCH', 'REGISTER_MISMATCH', 'SCOPE_DIFFERS')) AS has_crosscheck,
+       CASE r.reason
+           WHEN 'MATCH'              THEN 'checked against the signed register: ties'
+           WHEN 'REGISTER_MISMATCH'  THEN 'checked against the signed register: differs'
+           WHEN 'SCOPE_DIFFERS'      THEN 'checked against a Warrant Recap, which is a wider scope'
+           WHEN 'REGISTER_NO_TEXT'   THEN 'no cross-check: the signed register is a scan with no text layer'
+           WHEN 'REGISTER_NOT_FOUND' THEN 'no cross-check: no signed register or recap is on this machine'
+           ELSE                           'no cross-check recorded'
+       END                                                           AS crosscheck_note,
+       r.register_file_path,
+       r.locator_register_page,
+       r.locator_register_quote
+FROM facts.voucher_set s
+LEFT JOIN facts.voucher_reconciliation r ON r.set_id = s.set_id;
+
+COMMENT ON VIEW facts.register_availability IS
+    'Per set: whether an independent register cross-check exists, and if not, why not.';
+
+-- ----------------------------------------------------- unread_lines_by_set --
+-- Rows that are printed on the page and could not be assigned to columns.
+-- A deliverable in its own right: it is the list of everything this layer
+-- knows it has not read.
+CREATE OR REPLACE VIEW facts.unread_lines AS
+SELECT s.meeting_date,
+       s.fund,
+       l.set_id,
+       l.line_seq,
+       l.reason_code,
+       l.reason_detail,
+       l.locator_file_path,
+       l.locator_page,
+       l.locator_char_offset,
+       l.locator_quote
+FROM facts.voucher_line l
+JOIN facts.voucher_set  s ON s.set_id = l.set_id
+WHERE l.reason_code IS NOT NULL
+ORDER BY s.meeting_date, s.fund, l.line_seq;
+
+COMMENT ON VIEW facts.unread_lines IS
+    'Every printed row the column grid could not read, with the page it is on.';

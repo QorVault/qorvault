@@ -233,6 +233,20 @@ ERA_C_RX = re.compile(r"Check\s*date\s+Check\s*#|Work\s+performed", re.I)
 ERA_D_RX = re.compile(r"Check\s+Date\s+(?:Check\s+)?Number|Check\s+Number", re.I)
 
 
+# The one reason code added for column assignment. Every way a row can
+# fail to be read by geometry -- a character sitting on a boundary, a
+# column whose content fails its own type check, a required column with
+# nothing in it, or a page whose grid could not be derived -- is this code,
+# with the specific failure in ``reason_detail``. One code, because a row
+# that cannot be read is one kind of fact regardless of which column broke.
+COLUMN_AMBIGUOUS = "COLUMN_AMBIGUOUS"
+
+# A check number as this corpus prints it. Matches the bound the regex row
+# patterns have always used, so the geometry path accepts and rejects the
+# same numbers the regex path did.
+CHECK_NUMBER_RX = re.compile(r"^\d{5,11}$")
+
+
 @dataclass
 class Row:
     """One parsed voucher line with its locator offsets.
@@ -247,6 +261,13 @@ class Row:
         char_offset: Offset of the row's first character in the PDF text.
         char_end: Offset just past the row's last character.
         line_text: The raw line, for the locator quote.
+        reason_code: ``COLUMN_AMBIGUOUS`` when the row could not be read,
+            otherwise None. A row with a reason code is still recorded:
+            a row that is on the page and not in the table is a silent
+            drop, which is the failure mode this layer exists to prevent.
+        reason_detail: What specifically could not be read.
+        regex_verdict: ``agree``, ``disagree`` or ``regex_miss`` from the
+            retired regex path, kept as a per-line cross-check only.
     """
 
     vendor_raw: str
@@ -258,6 +279,9 @@ class Row:
     char_offset: int
     char_end: int
     line_text: str
+    reason_code: str | None = None
+    reason_detail: str | None = None
+    regex_verdict: str | None = None
 
 
 @dataclass
@@ -276,6 +300,14 @@ class ParsedListing:
         pcard_period: (start, end) of the P-card period as printed.
         fund_from_text: Fund named by the printed header, when present.
         notes: Observations worth carrying onto the set row.
+        grid_schema: Listing format the column grid matched, when one did.
+        grid_method: How the grid's corridors were measured.
+        grid_note: Why no grid could be built, when that is the case.
+        grid_columns: Canonical column names the grid carries.
+        narrowest_corridor: Tightest boundary corridor on the grid.
+        regex_agree: Rows where the retired regex agreed with geometry.
+        regex_disagree: Rows where it produced something different.
+        regex_miss: Rows it could not read at all.
     """
 
     era: str | None
@@ -289,6 +321,14 @@ class ParsedListing:
     pcard_period: tuple[date | None, date | None] = (None, None)
     fund_from_text: str | None = None
     notes: list[str] = field(default_factory=list)
+    grid_schema: str | None = None
+    grid_method: str | None = None
+    grid_note: str | None = None
+    grid_columns: tuple[str, ...] = ()
+    narrowest_corridor: float | None = None
+    regex_agree: int = 0
+    regex_disagree: int = 0
+    regex_miss: int = 0
 
 
 PERIOD_RX = re.compile(
@@ -450,6 +490,23 @@ def parse_listing(text: str, first_page: str, meeting_date: str | None = None) -
                 previous.description = f"{previous.description} {tail}".strip()
                 previous.char_end = line_start + len(line)
 
+    _read_totals(result, text, first_page, last_row_end)
+    return result
+
+
+def _read_totals(result: ParsedListing, text: str, first_page: str, last_row_end: int) -> None:
+    """Read the printed TOTAL lines and the header's periods.
+
+    Unchanged by the geometry work and shared by both parse paths: a TOTAL
+    is a whole line of text, not a column, and reading it from coordinates
+    would be a change with nothing to gain.
+
+    Args:
+        result: The listing being built, mutated in place.
+        text: Full layout-preserved text of the PDF.
+        first_page: Text of page 1.
+        last_row_end: Offset just past the last data row found.
+    """
     for match in TOTAL_LINE_RX.finditer(text):
         amount = money(match.group("amount"))
         if amount is not None:
@@ -482,6 +539,185 @@ def parse_listing(text: str, first_page: str, meeting_date: str | None = None) -
     if pcard:
         result.pcard_period = (parse_date(pcard.group("d1")), parse_date(pcard.group("d2")))
 
+
+def read_cells(cells, keys: tuple[str, ...]) -> tuple[Row | None, list[str]]:
+    """Turn one row's assigned columns into a Row, or say why it cannot be.
+
+    Every column is parsed independently and against its own type. A
+    boundary is never moved to make a column parse, and a column that fails
+    is never filled in from a neighbour.
+
+    Args:
+        cells: The row's assigned columns.
+        keys: Canonical column names the grid carries, left to right.
+
+    Returns:
+        ``(row, problems)``. ``row`` carries the values that did parse even
+        when ``problems`` is non-empty, so a failed row still shows the
+        operator what was on the page.
+    """
+    problems: list[str] = []
+    if cells.ambiguous:
+        problems.append(f"character on a column boundary: {cells.ambiguous[0]}")
+
+    vendor = cells.get("vendor")
+    if not vendor:
+        problems.append("the vendor column is empty")
+
+    check_date = None
+    if "check_date" in keys:
+        raw = cells.get("check_date")
+        check_date = parse_date(raw)
+        if check_date is None:
+            problems.append(f"the check date column holds {raw!r}, which is not a date")
+
+    check_number = None
+    if "check_number" in keys:
+        raw = cells.get("check_number").replace(" ", "")
+        if CHECK_NUMBER_RX.match(raw):
+            check_number = raw
+        else:
+            problems.append(f"the check number column holds {raw!r}, which is not a check number")
+
+    invoice = money(cells.get("invoice_amount"))
+    if invoice is None:
+        problems.append(f"the invoice amount column holds {cells.get('invoice_amount')!r}, which is not an amount")
+
+    if "check_amount" in keys:
+        check_amount = money(cells.get("check_amount"))
+        if check_amount is None:
+            problems.append(f"the check amount column holds {cells.get('check_amount')!r}, which is not an amount")
+    else:
+        # Era A prints one amount. Saying the check total differs from the
+        # invoice total would invent a distinction the document does not
+        # make.
+        check_amount = invoice
+
+    row = Row(
+        vendor_raw=_clean(vendor),
+        check_date=check_date,
+        check_number=check_number,
+        check_amount=check_amount,
+        invoice_amount=invoice,
+        description=_clean(cells.get("description")),
+        char_offset=0,
+        char_end=0,
+        line_text="",
+    )
+    return row, problems
+
+
+def _regex_verdict(line: str, era: str | None, row: Row) -> str:
+    """Compare the retired regex path against what geometry read.
+
+    Geometry is authoritative. This runs only so the parse log can say how
+    often the two agree, and on which sets they do not.
+
+    Args:
+        line: The row's layout text line.
+        era: Detected format era.
+        row: The row geometry produced.
+
+    Returns:
+        ``agree``, ``disagree`` or ``regex_miss``.
+    """
+    match = _row_regex_for(era or "D").match(line)
+    if not match:
+        return "regex_miss"
+    other = _row_from_match(match, 0, line, era or "D")
+    if other is None:
+        return "regex_miss"
+    same = other.invoice_amount == row.invoice_amount and other.check_number == row.check_number
+    return "agree" if same else "disagree"
+
+
+def parse_listing_geometric(pdf, meeting_date: str | None = None) -> ParsedListing:
+    """Parse a voucher detail listing by column geometry.
+
+    Args:
+        pdf: A ``PdfText`` carrying both the layout text and the page
+            geometry.
+        meeting_date: ISO meeting date, used only as an era tie-break.
+
+    Returns:
+        A ParsedListing. Rows that could not be read carry a reason code
+        and are still present.
+    """
+    import geometry as geo
+
+    first_page = pdf.pages[0].text if pdf.pages else ""
+    era = detect_era(first_page, meeting_date)
+    result = ParsedListing(era=era)
+    grid = pdf.grid
+    result.grid_note = pdf.grid_note
+    if grid is None:
+        _read_totals(result, pdf.text, first_page, 0)
+        return result
+
+    result.grid_schema = grid.schema
+    result.grid_method = grid.method
+    result.grid_columns = grid.keys
+    result.narrowest_corridor = grid.narrowest_corridor
+    if grid.outside_header_band:
+        result.notes.append(
+            f"{len(grid.outside_header_band)} column boundary(ies) sit outside the band between the "
+            f"header labels they separate: {'; '.join(grid.outside_header_band)}"
+        )
+    if pdf.grid_drift:
+        result.notes.append(f"header drift between pages: {'; '.join(pdf.grid_drift)}")
+    if pdf.misaligned_pages:
+        result.notes.append(
+            f"page(s) {pdf.misaligned_pages} render a different number of text lines than printed rows; "
+            f"their locator offsets are page-level rather than line-level"
+        )
+
+    keys = grid.keys
+    last_row_end = 0
+    for page in pdf.pages:
+        for placed in page.rows:
+            row_geo, line, offset = placed.row, placed.line, placed.char_offset
+            if row_geo.top in page.header_tops:
+                continue
+            if not line.strip() or NOISE_RX.match(line) or TOTAL_LINE_RX.match(line):
+                continue
+            if geo.is_data_row(row_geo, grid.left_margin):
+                parsed, problems = read_cells(geo.assign_row(row_geo, grid), keys)
+                parsed.char_offset = offset
+                parsed.char_end = offset + len(line)
+                parsed.line_text = line
+                if problems:
+                    parsed.reason_code = COLUMN_AMBIGUOUS
+                    parsed.reason_detail = "; ".join(problems)
+                    if not parsed.vendor_raw:
+                        parsed.vendor_raw = _clean(line)[:300] or "(blank row)"
+                parsed.regex_verdict = _regex_verdict(line, era, parsed)
+                if parsed.regex_verdict == "agree":
+                    result.regex_agree += 1
+                elif parsed.regex_verdict == "disagree":
+                    result.regex_disagree += 1
+                else:
+                    result.regex_miss += 1
+                result.rows.append(parsed)
+                last_row_end = parsed.char_end
+                continue
+            # Not a data row. If it carries no amount and we already have a
+            # row, it is the wrapped tail of the previous one.
+            if result.rows and not HAS_AMOUNT_RX.search(line) and CONTINUATION_RX.match(line):
+                tail = _clean(line)
+                if tail:
+                    previous = result.rows[-1]
+                    previous.description = f"{previous.description} {tail}".strip()
+                    previous.char_end = offset + len(line)
+                    # last_row_end deliberately does NOT move here. It
+                    # anchors which printed TOTAL is the set's own, and a
+                    # wrapped description is not a new data row. The
+                    # 2026-05-27 Transportation listing has one data row on
+                    # page 1 followed by four title-only pages and a second
+                    # TOTAL at exactly twice the real figure; advancing the
+                    # anchor over those titles hands the set the wrong
+                    # total.
+
+    _read_totals(result, pdf.text, first_page, last_row_end)
     return result
 
 

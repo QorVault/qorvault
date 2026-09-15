@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS facts.voucher_set (
     reason_code              text
         CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS',
                                'TOTAL_NOT_FOUND', 'NO_TEXT_LAYER',
-                               'REGEX_MISS', 'DUPLICATE_SET', 'OTHER')),
+                               'REGEX_MISS', 'DUPLICATE_SET',
+                               'COLUMN_AMBIGUOUS', 'OTHER')),
     notes                    text,
 
     source                   text NOT NULL
@@ -129,6 +130,18 @@ CREATE TABLE IF NOT EXISTS facts.voucher_line (
     -- row itself stays in the table.
     is_person_shaped     boolean NOT NULL DEFAULT false,
     is_credit            boolean NOT NULL DEFAULT false,
+
+    -- A row the column grid could not read is kept, not dropped. The table
+    -- must be able to say "this row is on the page and these are the
+    -- columns that would not parse", because a row that is printed and
+    -- absent here is a silent loss of public money. Exactly one code:
+    -- every way a row can fail column assignment is the same kind of fact,
+    -- and reason_detail carries which column broke.
+    reason_code          text CHECK (reason_code IN ('COLUMN_AMBIGUOUS')),
+    reason_detail        text,
+    -- What the retired regex row parser made of the same line. Geometry is
+    -- authoritative; this is a cross-check, never an input.
+    regex_verdict        text CHECK (regex_verdict IN ('agree', 'disagree', 'regex_miss')),
 
     source               text NOT NULL
         CHECK (source IN ('corpus_pdf', 'staged_pdf')),
@@ -226,11 +239,20 @@ CREATE TABLE IF NOT EXISTS facts.voucher_parse_log (
     status               text NOT NULL
         CHECK (status IN ('parsed', 'no_text_layer', 'unreadable',
                           'era_unmatched', 'regex_miss', 'total_not_found',
-                          'out_of_balance', 'skipped')),
+                          'out_of_balance', 'column_ambiguous', 'skipped')),
     pages                integer,
     lines_found          integer NOT NULL DEFAULT 0,
     checks_found         integer NOT NULL DEFAULT 0,
     note                 text,
+    -- How the columns were read, and how the retired regex path scored
+    -- against them. Kept per artifact so a disagreement rate by set is a
+    -- query rather than a rerun.
+    grid_schema          text,
+    grid_method          text CHECK (grid_method IN ('runs', 'header_band')),
+    unread_lines         integer NOT NULL DEFAULT 0,
+    regex_agree          integer NOT NULL DEFAULT 0,
+    regex_disagree       integer NOT NULL DEFAULT 0,
+    regex_miss           integer NOT NULL DEFAULT 0,
     source               text NOT NULL
         CHECK (source IN ('corpus_pdf', 'staged_pdf')),
     parsed_at            timestamptz NOT NULL DEFAULT now(),
@@ -253,3 +275,50 @@ CREATE INDEX IF NOT EXISTS idx_vline_sha       ON facts.voucher_line(locator_fil
 -- it is a deliberate decision, not a side effect of running schema.sql.
 CREATE INDEX IF NOT EXISTS idx_vrecon_set      ON facts.voucher_reconciliation(set_id);
 CREATE INDEX IF NOT EXISTS idx_vplog_date      ON facts.voucher_parse_log(meeting_date);
+
+
+-- ---------------------------------------------------------- R1 migration --
+-- Applied to a database built before column assignment moved to geometry.
+-- CREATE TABLE IF NOT EXISTS above does nothing to an existing table, so
+-- the same changes are repeated here as idempotent ALTERs. Safe to run
+-- against a fresh database too: every statement is a no-op there.
+
+ALTER TABLE facts.voucher_line
+    ADD COLUMN IF NOT EXISTS reason_code   text,
+    ADD COLUMN IF NOT EXISTS reason_detail text,
+    ADD COLUMN IF NOT EXISTS regex_verdict text;
+
+ALTER TABLE facts.voucher_parse_log
+    ADD COLUMN IF NOT EXISTS grid_schema    text,
+    ADD COLUMN IF NOT EXISTS grid_method    text,
+    ADD COLUMN IF NOT EXISTS unread_lines   integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS regex_agree    integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS regex_disagree integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS regex_miss     integer NOT NULL DEFAULT 0;
+
+DO $$
+BEGIN
+    ALTER TABLE facts.voucher_line  DROP CONSTRAINT IF EXISTS voucher_line_reason_code_check;
+    ALTER TABLE facts.voucher_line  DROP CONSTRAINT IF EXISTS voucher_line_regex_verdict_check;
+    ALTER TABLE facts.voucher_set   DROP CONSTRAINT IF EXISTS voucher_set_reason_code_check;
+    ALTER TABLE facts.voucher_parse_log DROP CONSTRAINT IF EXISTS voucher_parse_log_status_check;
+    ALTER TABLE facts.voucher_parse_log DROP CONSTRAINT IF EXISTS voucher_parse_log_grid_method_check;
+
+    ALTER TABLE facts.voucher_line ADD CONSTRAINT voucher_line_reason_code_check
+        CHECK (reason_code IN ('COLUMN_AMBIGUOUS'));
+    ALTER TABLE facts.voucher_line ADD CONSTRAINT voucher_line_regex_verdict_check
+        CHECK (regex_verdict IN ('agree', 'disagree', 'regex_miss'));
+    ALTER TABLE facts.voucher_set ADD CONSTRAINT voucher_set_reason_code_check
+        CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS', 'TOTAL_NOT_FOUND',
+                               'NO_TEXT_LAYER', 'REGEX_MISS', 'DUPLICATE_SET',
+                               'COLUMN_AMBIGUOUS', 'OTHER'));
+    ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_status_check
+        CHECK (status IN ('parsed', 'no_text_layer', 'unreadable', 'era_unmatched',
+                          'regex_miss', 'total_not_found', 'out_of_balance',
+                          'column_ambiguous', 'skipped'));
+    ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_grid_method_check
+        CHECK (grid_method IN ('runs', 'header_band'));
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_vline_reason ON facts.voucher_line(reason_code)
+    WHERE reason_code IS NOT NULL;

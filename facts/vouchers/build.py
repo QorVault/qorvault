@@ -36,7 +36,7 @@ import db
 import psycopg2.extras
 from classify import fund_from_text
 from locators import PdfText, make_quote, source_kind
-from parsers import ParsedListing, parse_listing, parse_register
+from parsers import COLUMN_AMBIGUOUS, ParsedListing, parse_listing_geometric, parse_register
 from psycopg2 import sql
 from vendors import is_person_shaped, normalize_vendor
 
@@ -60,6 +60,7 @@ class SetRow:
         artifact: The census artifact it came from.
         parsed: The parser's output.
         lines: Parsed line rows.
+        unread_lines: Rows held with a reason code rather than parsed.
     """
 
     set_id: str
@@ -77,6 +78,7 @@ class SetRow:
     notes: list[str] = field(default_factory=list)
     fund: str | None = None
     stated_total_page: int | None = None
+    unread_lines: int = 0
 
 
 def choose_fund(artifact, parsed: ParsedListing, first_page: str) -> tuple[str | None, str | None]:
@@ -115,6 +117,7 @@ def build_lines(set_id: str, artifact, parsed: ParsedListing, pdf: PdfText) -> l
     out: list[dict] = []
     for seq, row in enumerate(parsed.rows, start=1):
         number = row.check_number or ""
+        quote = make_quote(pdf.text, row.char_offset, row.char_end) or (row.line_text.strip()[:300] or "(blank row)")
         out.append(
             {
                 "set_id": set_id,
@@ -131,13 +134,16 @@ def build_lines(set_id: str, artifact, parsed: ParsedListing, pdf: PdfText) -> l
                 "is_person_shaped": is_person_shaped(row.vendor_raw),
                 "is_credit": (row.invoice_amount is not None and row.invoice_amount < 0)
                 or number in SENTINEL_CHECK_NUMBERS,
+                "reason_code": row.reason_code,
+                "reason_detail": row.reason_detail,
+                "regex_verdict": row.regex_verdict,
                 "source": source,
                 "locator_document_id": artifact.document_id,
                 "locator_file_path": artifact.resolved_path,
                 "locator_file_sha256": artifact.sha256,
                 "locator_page": pdf.page_for_offset(row.char_offset),
                 "locator_char_offset": row.char_offset,
-                "locator_quote": make_quote(pdf.text, row.char_offset, row.char_end),
+                "locator_quote": quote,
             }
         )
     return out
@@ -159,6 +165,12 @@ def summarize(row: SetRow) -> None:
     seen: dict[str, Decimal] = {}
     total = Decimal("0")
     for line in row.lines:
+        # A row that could not be read contributes nothing to any control
+        # total. It is counted, held and reported -- never summed as if it
+        # were zero and never silently dropped.
+        if line["reason_code"] is not None:
+            row.unread_lines += 1
+            continue
         if line["invoice_amount"] is not None:
             total += line["invoice_amount"]
         number = line["check_number"]
@@ -170,10 +182,23 @@ def summarize(row: SetRow) -> None:
     row.sum_check_dedup = sum(seen.values(), Decimal("0"))
     row.check_count = len(seen)
     row.stated_total = row.parsed.stated_total
+    if row.unread_lines:
+        row.notes.append(
+            f"{row.unread_lines} of {len(row.lines)} printed rows could not be assigned to columns and are "
+            f"held with reason code {COLUMN_AMBIGUOUS}; they are excluded from every total on this row."
+        )
 
+    if row.parsed.grid_note and not row.lines:
+        row.reconciled = False
+        row.reason_code = COLUMN_AMBIGUOUS
+        return
     if not row.lines:
         row.reconciled = False
         row.reason_code = "REGEX_MISS"
+        return
+    if row.unread_lines == len(row.lines):
+        row.reconciled = False
+        row.reason_code = COLUMN_AMBIGUOUS
         return
     if row.stated_total is None:
         # Nothing to check against. Not a failure of the parse, and not a
@@ -231,10 +256,57 @@ def mark_cumulative(sets: list[SetRow]) -> None:
             seen |= numbers
 
 
+def _no_register(row: SetRow, reason: str, path: str | None, sha: str | None) -> dict:
+    """Record that a set has no usable register to be checked against.
+
+    The absence is stored rather than left implicit. A reader looking at
+    2026-06-24 or 2026-07-22 needs to know that the signed register for
+    those nights is a scan with no text layer, so the listing is the only
+    machine-readable source and the figure has no second opinion behind it.
+
+    Args:
+        row: The set.
+        reason: ``REGISTER_NOT_FOUND`` or ``REGISTER_NO_TEXT``.
+        path: Path of the register that exists but cannot be read.
+        sha: Digest of that register.
+
+    Returns:
+        A reconciliation dict with no comparison in it.
+    """
+    return {
+        "set_id": row.set_id,
+        # The basis that WOULD have applied. Saying which comparison is
+        # missing is more use than saying only that one is.
+        "basis": "ap_direct_deposit" if row.fund == "ACH" else "warrants_plus_pcard",
+        "register_document_id": None,
+        "register_file_path": path,
+        "register_file_sha256": sha,
+        "register_total": None,
+        "register_warrant_range": None,
+        "detail_total": row.parsed_total,
+        "match": None,
+        "delta": None,
+        "reason": reason,
+        "notes": (
+            "The signed register for this meeting has no extractable text layer, so the listing is the only "
+            "machine-readable source for this set."
+            if reason == "REGISTER_NO_TEXT"
+            else "No signed register or warrant recap for this meeting is on this machine."
+        ),
+        "locator_detail_page": None,
+        "locator_detail_char_offset": row.parsed.stated_total_offset,
+        "locator_detail_quote": None,
+        "locator_register_page": None,
+        "locator_register_char_offset": None,
+        "locator_register_quote": None,
+    }
+
+
 def reconcile_against_register(
     sets_by_date: dict[str, list[SetRow]],
     registers: dict[str, list[dict]],
     recaps: dict[str, list[dict]],
+    unreadable: dict[str, tuple[str, str | None]] | None = None,
 ) -> list[dict]:
     """Cross-check each set against the signed register, where one exists.
 
@@ -258,10 +330,13 @@ def reconcile_against_register(
         sets_by_date: Sets grouped by meeting date.
         registers: Parsed registers, keyed by meeting date.
         recaps: Parsed recap fund totals, keyed by meeting date.
+        unreadable: Meeting dates whose register exists but carries no text
+            layer, mapped to ``(path, sha256)``.
 
     Returns:
         ``facts.voucher_reconciliation`` dicts.
     """
+    unreadable = unreadable or {}
     out: list[dict] = []
     for meeting_date, rows in sets_by_date.items():
         register = registers.get(meeting_date)
@@ -269,14 +344,19 @@ def reconcile_against_register(
         for row in rows:
             if row.fund is None or not row.lines:
                 continue
+            record = None
             if register:
                 record = _register_basis(row, register)
-                if record:
-                    out.append(record)
             elif recap:
                 record = _recap_basis(row, recap)
-                if record:
-                    out.append(record)
+            if record:
+                out.append(record)
+                continue
+            if meeting_date in unreadable:
+                path, sha = unreadable[meeting_date]
+                out.append(_no_register(row, "REGISTER_NO_TEXT", path, sha))
+            elif not register and not recap:
+                out.append(_no_register(row, "REGISTER_NOT_FOUND", None, None))
     return out
 
 
@@ -400,6 +480,11 @@ def build_vendors(all_lines: list[dict], set_dates: dict[str, date]) -> list[dic
     """
     agg: dict[str, dict] = {}
     for line in all_lines:
+        # A row that could not be read has no vendor to aggregate: its
+        # vendor_raw is whatever text was on the page. Letting it through
+        # would invent vendors out of unparsed rows.
+        if line["reason_code"] is not None:
+            continue
         norm = line["vendor_norm"]
         entry = agg.get(norm)
         when = set_dates.get(line["set_id"])
@@ -483,6 +568,9 @@ LINE_COLUMNS = (
     "is_payroll_warrant",
     "is_person_shaped",
     "is_credit",
+    "reason_code",
+    "reason_detail",
+    "regex_verdict",
     "source",
     "locator_document_id",
     "locator_file_path",
@@ -544,6 +632,12 @@ LOG_COLUMNS = (
     "checks_found",
     "note",
     "source",
+    "grid_schema",
+    "grid_method",
+    "unread_lines",
+    "regex_agree",
+    "regex_disagree",
+    "regex_miss",
 )
 
 
@@ -594,6 +688,7 @@ def main() -> None:
     logs: list[dict] = []
     registers: dict[str, dict] = {}
     recaps: dict[str, dict] = {}
+    unreadable_registers: dict[str, tuple[str, str | None]] = {}
     used_ids: set[str] = set()
 
     parseable = [a for a in kept if a.doc_class in {"detail_listing", "warrant_register", "warrant_recap"}]
@@ -614,14 +709,25 @@ def main() -> None:
             "checks_found": 0,
             "note": None,
             "source": source,
+            "grid_schema": None,
+            "grid_method": None,
+            "unread_lines": 0,
+            "regex_agree": 0,
+            "regex_disagree": 0,
+            "regex_miss": 0,
         }
         try:
-            pdf = PdfText(artifact.resolved_path)
+            # Geometry is only read for detail listings. The register and
+            # the recap are parsed as text lines, and reading coordinates
+            # for them would cost time for nothing.
+            pdf = PdfText(artifact.resolved_path, geometry_too=artifact.doc_class == "detail_listing")
         except Exception as exc:  # noqa: BLE001 - a corrupt PDF is data, not a crash
             logs.append({**base_log, "status": "unreadable", "note": f"{type(exc).__name__}: {exc}"})
             continue
         base_log["pages"] = pdf.page_count
         if not pdf.has_text_layer:
+            if artifact.doc_class == "warrant_register" and artifact.meeting_date:
+                unreadable_registers[artifact.meeting_date] = (artifact.resolved_path, artifact.sha256)
             logs.append({**base_log, "status": "no_text_layer"})
             continue
 
@@ -665,7 +771,7 @@ def main() -> None:
             )
             continue
 
-        parsed = parse_listing(pdf.text, first_page, artifact.meeting_date)
+        parsed = parse_listing_geometric(pdf, artifact.meeting_date)
         base_log["format_era"] = parsed.era
         if parsed.era is None:
             logs.append({**base_log, "status": "era_unmatched"})
@@ -698,11 +804,14 @@ def main() -> None:
             row.reason_code = "DUPLICATE_SET"
         sets.append(row)
 
-        status = {
-            True: "parsed",
-            False: "out_of_balance" if row.lines else "regex_miss",
-            None: "total_not_found",
-        }[row.reconciled]
+        if row.reason_code == COLUMN_AMBIGUOUS:
+            status = "column_ambiguous"
+        else:
+            status = {
+                True: "parsed",
+                False: "out_of_balance" if row.lines else "regex_miss",
+                None: "total_not_found",
+            }[row.reconciled]
         logs.append(
             {
                 **base_log,
@@ -710,7 +819,13 @@ def main() -> None:
                 "status": status,
                 "lines_found": len(row.lines),
                 "checks_found": row.check_count,
-                "note": "; ".join(row.notes) or None,
+                "note": "; ".join(row.notes) or parsed.grid_note,
+                "grid_schema": parsed.grid_schema,
+                "grid_method": parsed.grid_method,
+                "unread_lines": row.unread_lines,
+                "regex_agree": parsed.regex_agree,
+                "regex_disagree": parsed.regex_disagree,
+                "regex_miss": parsed.regex_miss,
             }
         )
 
@@ -719,7 +834,7 @@ def main() -> None:
     sets_by_date: dict[str, list[SetRow]] = defaultdict(list)
     for row in sets:
         sets_by_date[row.artifact.meeting_date].append(row)
-    recon_rows = reconcile_against_register(sets_by_date, registers, recaps)
+    recon_rows = reconcile_against_register(sets_by_date, registers, recaps, unreadable_registers)
 
     all_lines = [line for row in sets for line in row.lines]
     set_dates = {row.set_id: date.fromisoformat(row.artifact.meeting_date) for row in sets if row.artifact.meeting_date}
@@ -775,6 +890,16 @@ def main() -> None:
         f"reconciliations={len(recon_rows)} parse_log={len(logs)}"
     )
     if args.dry_run:
+        for out in sorted(set_rows, key=lambda r: (r["meeting_date"] or "", r["fund"] or "")):
+            row = next(r for r in sets if r.set_id == out["set_id"])
+            print(
+                f"  {out['set_id']:32s} era={out['format_era']} stated={out['stated_total']} "
+                f"parsed={out['parsed_total']} delta={out['delta']} lines={out['line_count']} "
+                f"unread={row.unread_lines} reconciled={out['reconciled']} reason={out['reason_code']} "
+                f"grid={row.parsed.grid_schema}/{row.parsed.grid_method} "
+                f"regex(agree/disagree/miss)={row.parsed.regex_agree}/"
+                f"{row.parsed.regex_disagree}/{row.parsed.regex_miss}"
+            )
         return
 
     with db.connect() as conn:

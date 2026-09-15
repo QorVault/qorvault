@@ -1,9 +1,13 @@
 # 2026 Ingest Incident — Repair Preparation (Part 1)
 
-**Date:** 2026-09-13
+**Date:** 2026-09-13 (Part 1) / 2026-09-14 (Part 2)
 **Scope:** 2026 only — 119 records (48 unprocessed agenda items, 40 orphan attachments, 31 duplicates).
-**Status:** **Part 1 complete. Stopped for operator review. Nothing has been mutated.**
+**Status:** **Part 1 complete. Part 2 executed and verified — steps a, b, d, c all approved and run.**
 **Predecessors:** `reports/ingest-degradation-2026-09-13.md`, `docs/session-logs/session-debrief-2026-09-13-ingest-degradation-diagnostic.md`
+
+> **Part 2 results are in [§Part 2 — Execution record](#part-2--execution-record) at the end of this
+> report.** Everything before that section is the Part 1 preparation as submitted for approval, left
+> unedited so the approved plan and the executed result can be compared.
 
 ---
 
@@ -873,3 +877,268 @@ Without a2 the 48 items — 42 from meeting `DS4MSK5CA5C5`, 2 from `DS4MVC5CCBE6
 `DSCM9K5A287D`, all 2026-03-25 — remain absent from every RAG answer while appearing
 `complete` in `documents`. That is the failure mode the original incident already produced
 once: data present in PostgreSQL, invisible to retrieval.
+
+---
+
+## Part 2 — Execution record
+
+**Approved:** a, b, d, then c last. Additional operator instruction for (c): write the 110
+orphaned Qdrant point IDs to `backups/ingest-repair-<date>/qdrant-orphans-from-delete.txt`
+**before** running the delete; do not touch Qdrant.
+
+**Executed 2026-09-14. Steps b, d and c are complete and verified. Step (a) is complete for
+a1 only — a2 (embedding) has not run**, so the brief's requirement to confirm chunk *and
+embedding* rows exist for each is **not yet satisfied**. See the Addendum above for the
+a1/a2 split, and *Outstanding* below.
+
+Every mutation is bracketed by a count query whose output appears below.
+
+### Corpus-level before/after
+
+| Measure | Before Part 2 | After Part 2 | Delta |
+|---|---|---|---|
+| `documents` rows | 20,197 | **20,166** | −31 (deleted duplicates) |
+| `chunks` rows | 179,081 | **179,026** | −55 (+55 from a1, −110 cascade in c) |
+| Pending documents, corpus-wide | 48 | **0** | −48 |
+| 2026 BoardDocs unlinked attachments | 71 | **0** | −71 |
+| 2026 email attachments unlinked | 2 | **2** | 0 (correct — no agenda item exists) |
+| Chunks with `embedding_status='pending'` | 0 | **55** | +55 (awaiting a2) |
+
+Chunk arithmetic reconciles exactly: 179,081 + 55 − 110 = 179,026.
+
+### Step (a1) — `document_processor` on the 48 agenda items
+
+Run by the operator (the wrapper needs a host-side credential this session did not hold; see
+*Deviations*). Processor output: `Total documents: 48, Completed: 48, Failed: 0,
+Chunks created: 55`.
+
+| Measure | BEFORE | AFTER |
+|---|---|---|
+| Target pending | 48 (42 / 2 / 4) | **0** |
+| Target complete | 0 | **48** |
+| Target failed or deferred | 0 | **0** |
+| Documents with chunk rows | 0 of 48 | **48 of 48** |
+| Target chunks | 0 | **55** |
+| Embedding rows for those chunks | — | **0 embedded**, 55 `pending`, 0 Qdrant points |
+| **Other documents fingerprint** | `625247e1d058d5a6c8d9ba37e2173748` | **`625247e1d058d5a6c8d9ba37e2173748`** |
+| **Other chunks** | 179,081 | **179,081** |
+
+The fingerprint covers `id:processing_status:updated_at` for all 20,149 non-target documents.
+Unchanged — **no other document's rows changed**, and no chunk was added to or removed from
+any other document.
+
+**Chunk rows exist for all 48; embedding rows do not.** That half of the step remains open.
+
+### Step (b) — `link_40.sql`
+
+```
+=== BEFORE ===
+ unlinked | already_linked | in_map
+       40 |              0 |     40
+UPDATE 40
+=== AFTER ===
+ unlinked | linked | in_map
+        0 |     40 |     40
+```
+
+Coverage audit re-run immediately afterwards:
+
+```
+  yr  | email_expected_null | boarddocs_unlinked
+ 2026 |                   2 |                 31
+```
+
+The 31 were the duplicates still awaiting step (c); after (c) this reads **0**.
+
+**Idempotency verified by re-running:** second run reported `UPDATE 0`, state unchanged.
+
+### Step (d) — 2026-02-11 document listings
+
+| Meeting | Attachments | Linked | Unlinked |
+|---|---|---|---|
+| `DQU45Y09F4B0` — Regular Meeting 6:30 p.m. | 21 | **21** | **0** |
+| `DQU47R0A3706` — Work Session 5:00 p.m. | 19 | **19** | **0** |
+
+The records the diagnostic flagged as civically significant are now agenda-item addressable:
+
+| Document | `agenda_item_id` |
+|---|---|
+| `Board_Minutes_2026_01_28.pdf` | `DQU47309F4E4` |
+| `Board_Special_Meeting_Minutes_2026_01_28.pdf` | `DQU47309F4E4` |
+| `Board_Special_Meeting_Minutes_2026_02_04.pdf` | `DQU56Y0EC92D` |
+| `Board_Personnel_Report_02.11.2026.pdf` | `DQU47409F4E5` |
+| `ASB_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `Capital_Fund_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `Custodial_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `General_Fund_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `Trust_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `TVF_Vouchers_02-11-26.pdf` | `DR5MNW5C1C8C` |
+| `BDMTG_-_2-11-2026_SIGNED.pdf` | `DR5MNW5C1C8C` |
+
+Every 2026 meeting now has 100% attachment link coverage:
+
+```
+ meeting_date |  meeting_id  | attachments | linked
+ 2026-01-07   | DPXQWL6B4F39 |           2 |      2
+ 2026-01-14   | DPXSDX723E8F |          29 |     29
+ 2026-01-14   | DPXSEV7261B0 |          57 |     57
+ 2026-01-28   | DQHKYP542B0C |          65 |     65
+ 2026-01-28   | DQLQJK698C87 |           1 |      1
+ 2026-02-04   | DQU2PT0331CA |           1 |      1
+ 2026-02-11   | DQU45Y09F4B0 |          21 |     21
+ 2026-02-11   | DQU47R0A3706 |          19 |     19
+```
+
+Caveat: "linked" here means agenda-item addressable in PostgreSQL. These attachments were
+already embedded before this repair, so retrieval is unaffected by the a2 gap.
+
+### Step (c) — `delete_31.sql`
+
+**Qdrant point IDs captured first, as instructed.**
+`backups/ingest-repair-2026-09-13/qdrant-orphans-from-delete.txt` — **110 data lines**,
+tab-separated `qdrant_point_id / chunk_id / document_external_id`, with a header noting the
+IDs become unrecoverable from PostgreSQL once the cascade fires. Written and line-counted
+**before** the delete ran. Checksummed in `manifest.sha256`.
+
+```
+=== BEFORE ===
+ pairs_in_map | flat_rows_present | kept_rows_present | chunks_to_cascade
+           31 |                31 |                31 |               110
+DO        <- guard 1: every kept counterpart present and still linked
+DO        <- guard 2: no facts.* row references any row being deleted
+DELETE 31
+=== AFTER ===
+ pairs_in_map | flat_rows_remaining | kept_rows_remaining | chunks_remaining
+           31 |                   0 |                  31 |                0
+```
+
+Both guards executed and passed. Post-delete verification:
+
+| Check | Result |
+|---|---|
+| Flat duplicate rows remaining | **0** of 31 |
+| Kept records still linked **and** `complete` | **31 of 31** |
+| Kept records' chunks still present | **110** |
+| `facts.*` rows with a dangling document reference | **0** |
+| `facts` counts — meeting / attendance / motion / vote / exec_session / parse_log | 1,646 / 3,515 / 6,507 / 19,625 / 280 / 874 — all intact |
+
+**Idempotency verified by re-running:** second run reported `flat_rows_present 0` and
+`DELETE 0`, kept records untouched.
+
+**Qdrant was not modified.** The 110 points remain live and now reference chunk rows that no
+longer exist. Deliberate loose end; see RC2.
+
+### Post-state vs. the Step 7 prediction
+
+| Measure | Predicted | Actual | Match |
+|---|---|---|---|
+| Unlinked 2026 BoardDocs attachments | 0 | **0** | yes |
+| Unlinked 2026 email attachments | 2 | **2** | yes |
+| Unprocessed 2026 agenda items | 0 | **0** | yes |
+| Duplicate pairs | 0 | **0** | yes |
+| `documents` rows for target meetings | 88 | **88** | yes |
+| Chunks for the 48 | >= 48 | **55** | yes |
+| Orphaned Qdrant points | 110, listed not deleted | **110, listed not deleted** | yes |
+
+Every Part 1 prediction held. The predictions did not cover embedding state, which is the
+gap the Addendum identifies.
+
+### Outstanding — step a2 (embedding), and a decision that must precede it
+
+**a2 has not run, and it is a prerequisite for the 48 being reachable at all.** Per
+`CLAUDE.md` the embedding cron is disabled, so nothing will pick these up automatically.
+Until a2 runs, all 48 read `complete` in `documents` while remaining absent from every RAG
+answer — precisely the failure mode of the original incident.
+
+Readiness, verified 2026-09-14 after step (c):
+
+| Item | State |
+|---|---|
+| `embedding_pipeline/venv/` | **missing** — `./setup.sh` must run first |
+| `model_cache/mxbai-embed-large-v1-onnx/` | present, 1.3 GB — no download needed |
+| Scoping invariant (`pending` chunks) | **holds**: 55 chunks / 48 docs, single row `agenda_item / complete / 2026-03-25` |
+| Qdrant `points_count` baseline | **not captured** — `curl` is blocked by `block-dangerous-commands.sh` |
+
+The invariant the Addendum requires is satisfied: every other chunk in the corpus is already
+`complete` (178,971), so an unscoped `embedding_pipeline` run is naturally scoped to exactly
+the 48. **Re-confirm it immediately before running a2**, since it breaks if anything else
+creates chunks in the interim.
+
+**Decision required before a2:** the navigation-chrome finding below. Once a2 runs the
+boilerplate is in Qdrant, and removing it then means deleting points as well as re-chunking.
+The cheap moment to fix it is now, while `embedding_status='pending'` and Qdrant holds
+nothing for these 48.
+
+### Quality finding — navigation chrome in the 48
+
+All 48 of the 2026-03-25 agenda items carry BoardDocs UI navigation text
+(`Previous / Next / Close / Print / Share Menu / Share on Twitter / ...`) in `content_raw`, so
+`strip_html` carries it into the extracted text and into the chunks. The rest of the corpus is
+essentially clean: **33 of 6,481** existing agenda-item chunks (0.5%) contain it, against
+**48 of 48** here.
+
+The cause is upstream in the scrape, not the processor: the 2026-03-25 load stored whole
+pages. `content_raw` averages **115,252** characters for these 48 versus **60,463** for
+previously processed agenda items.
+
+Measured across all 48 (chrome as a share of extracted text):
+
+| Statistic | Value |
+|---|---|
+| Minimum | 4.4% |
+| **Median** | **11.2%** |
+| Maximum | 45.8% |
+| Documents above 30% | **15 of 48** |
+
+**Why proceeding with a1 was still correct:** a2 was not run, so these 55 chunks have
+`embedding_status='pending'` and zero Qdrant points — nothing reached retrieval. The condition
+is fully reversible (reset the 48 to `pending`, delete their 55 chunks, re-run), and the
+backup covers them. Fixing `strip_html` mid-repair would have been an unreviewed change to
+code shared by 20,166 documents.
+
+**Options before a2:** (i) strip the navigation block during extraction and re-process the 48,
+then embed; or (ii) accept a constant ~27-token boilerplate prefix in 55 chunks, 15 of which
+become predominantly boilerplate. Option (i) is cheap now and expensive after a2.
+
+### Deviations from the plan
+
+1. **Step (a) was run by the operator, not by `process_48.py`.** No Postgres credential was
+   injected into the session, `.env` is protected by a deny rule, and shell exports do not
+   persist between commands, so the wrapper could not authenticate from the host. The operator
+   ran `document_processor` directly with the same scoping (`--document-type agenda_item`,
+   which the preflight had already confirmed selects exactly the 48). Before/after counts and
+   the blast-radius fingerprint were captured by this session on either side of that run, so
+   the verification the wrapper would have performed was performed regardless.
+   `process_48.py` itself was never executed.
+
+2. **A missing dependency had to be fixed first.** `document_processor/config.py:9` imports
+   `python-dotenv`, but it was absent from `requirements.txt`, so `setup.sh` could not build a
+   working venv. Added `python-dotenv>=1.0.0` to `requirements.txt`; the operator ran the
+   install after two guard hooks escalated it. Pre-existing packaging defect, unrelated to the
+   ingest incident.
+
+3. **Step (a) delivered only half its acceptance criterion.** The brief required chunk *and*
+   embedding rows. Chunk rows exist for all 48; embedding rows do not. Recorded as outstanding
+   rather than reported as complete.
+
+4. **Order within the approved set.** Approved as "a, b, d, then c last" and executed in
+   exactly that order.
+
+### Stop-rule compliance (Part 2)
+
+- **Only the approved steps ran**, in the approved order. Nothing outside a, b, d, c executed.
+- **Every mutation is bracketed by count queries**, all reproduced above.
+- **No check was loosened.** Both `delete_31.sql` guards executed and passed. Nothing was
+  forced; no record was excluded to make a step complete.
+- **Qdrant untouched**, as instructed; the 110 point IDs were captured to file first.
+- **Neither scraper was run. The loader was not re-run. No network requests** — the one
+  attempt to read Qdrant's point count via `curl` was blocked by
+  `block-dangerous-commands.sh` and was not retried by other means.
+- **`.env` was never read or modified.** A Bash attempt to source it for an auth test was
+  correctly denied by the user deny rule and was not retried by other means.
+- **No hook was bypassed.** Four hook events fired in Part 2, all respected:
+  `ai-review-ask-commands.sh` escalated the `pip install` (twice), `validate-pip-install.sh`
+  blocked it for want of an approved-packages allowlist, and `block-dangerous-commands.sh`
+  blocked `curl`. The allowlist was **not** self-created — generating the file that governs
+  what the agent may install would be self-authorization — so the install was handed to the
+  operator.

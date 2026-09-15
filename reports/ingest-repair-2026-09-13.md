@@ -1142,3 +1142,150 @@ become predominantly boilerplate. Option (i) is cheap now and expensive after a2
   blocked `curl`. The allowlist was **not** self-created — generating the file that governs
   what the agent may install would be self-authorization — so the install was handed to the
   operator.
+
+---
+
+## Part 2 (continued) — Step a2: embedding the 48
+
+*Appended per the append-only convention. This closes the gap recorded in
+§Outstanding above: step (a) required chunk **and embedding** rows, and a1 delivered only
+the chunks.*
+
+**Executed 2026-09-14. Step (a) is now complete.**
+
+### Operator decision that preceded a2
+
+The navigation-chrome finding was resolved by decision, not by code change: **accept the nav
+prefix for these 48**. `strip_html` and the **81 affected documents** (33 pre-existing + 48
+from this repair) are handed to the rebuild's **chunk-header pass** as fixtures. The
+boilerplate is therefore embedded deliberately, with a named downstream owner, rather than
+tolerated by omission.
+
+### Prerequisites (operator)
+
+| Item | State |
+|---|---|
+| `embedding_pipeline/setup.sh` | **passed, 11/11 tests** — Python 3.12.14, ONNX Runtime 1.30.0, CPU |
+| `model_cache/mxbai-embed-large-v1-onnx/` | present, 1.3 GB — no download |
+| Qdrant `points_count` before | **230,587** (captured after setup; unchanged by the integration test) |
+
+### Scoping invariant — re-verified immediately before the run
+
+`embedding_pipeline` has no `--document-type` or `--document-id` flag; it selects solely on
+`embedding_status='pending'` (`pipeline.py:28`). It is therefore scoped only by what is
+pending at the moment it runs.
+
+```
+ pending_chunks | distinct_docs
+             55 |            48
+
+ document_type | processing_status | meeting_date | chunks | docs
+ agenda_item   | complete          | 2026-03-25   |     55 |   48     <- single row
+
+ embedding_status | count
+ complete         | 178971
+ pending          |     55
+```
+
+A single row, 48 distinct documents, nothing else pending anywhere in the corpus — so an
+unscoped run was naturally scoped to exactly the 48. `--limit 55` was passed as an
+additional hard cap on blast radius, because the selection query has no `ORDER BY` and would
+otherwise pick arbitrarily if anything had created chunks in the interim. Nothing had, so
+the cap was never load-bearing.
+
+### Dry run (nothing written)
+
+`--dry-run` fetched 3 chunks, embedded them, and wrote to neither Qdrant nor PostgreSQL.
+
+| Check | Result |
+|---|---|
+| Vector dimensions | **1024** — matches the collection |
+| L2 norm | **1.000000** on all three — correctly normalized for cosine |
+| Payload keys | `chunk_id`, `document_id`, `tenant_id`, `content`, `document_type`, `meeting_date`, `committee_name`, `meeting_id`, `agenda_item_id`, `title`, `source_url`, `chunk_index`, `token_count`, `contains_table` |
+| `agenda_item_id` / `source_url` | populated on all three |
+| Model load | cached ONNX, 0.8 s, CPU |
+
+**One false alarm, corrected before the real run.** The dry-run payload appeared to contain
+`Board.nsf/goto?open&amp;id=...` — an HTML entity that would have made every agenda-item
+citation URL malformed. It is a display artifact of how bash output is rendered into the
+session transcript, not stored data. The stored value is
+`https://go.boarddocs.com/wa/ksdwa/Board.nsf/goto?open&id=DS4MU65CA610` with a literal `&`,
+and **0 of 20,166 documents** contain the entity in `source_url`. The same escaping turned
+the title `Board Reports & Discussion` into `Board Reports &amp; Discussion` in the a1 log.
+No defect; nothing changed.
+
+### Real run
+
+```
+Batch 1: 55 chunks
+HTTP Request: PUT http://localhost:6333/collections/boarddocs_chunks/points?wait=true "HTTP/1.1 200 OK"
+Done: 55 embedded, 0 failed in 9.3s (355.0 chunks/min)
+```
+
+### Verification — PostgreSQL
+
+| Measure | BEFORE a2 | AFTER a2 |
+|---|---|---|
+| Chunks `pending` corpus-wide | 55 | **0** |
+| Chunks `complete` corpus-wide | 178,971 | **179,026** |
+| Chunks `failed` | 0 | **0** |
+| Chunks with `qdrant_point_id` | 178,971 | **179,026** (all) |
+| The 48 — status / embedding | `complete` / `pending` | **`complete` / `complete`** |
+| The 48 — chunks / docs / point IDs | 55 / 48 / 0 | **55 / 48 / 55** |
+| `embedding_model` distinct values | `mxbai-embed-large-v1` | `mxbai-embed-large-v1` |
+
+178,971 + 55 = 179,026 — **exactly the 55 moved; nothing else was touched.**
+
+### Verification — Qdrant
+
+| Measure | Value |
+|---|---|
+| `points_count` before | 230,587 |
+| `points_count` after | **230,642** |
+| Delta | **+55** — matches the 55 chunks embedded, exactly |
+
+Both sides reconcile. The 48 agenda items from 2026-03-25 are now retrievable.
+
+`Failed: 0` matters more than it looks: `pipeline.py:43` sets `embedding_status='failed'` on
+error, and the selection query picks up only `pending`. Any failed row would have been
+silently skipped by a re-run and would have needed a manual reset to `pending` first.
+
+### Final state — the whole repair
+
+| Measure | Original | Final |
+|---|---|---|
+| Unprocessed 2026 agenda items | 48 | **0** |
+| 2026 BoardDocs unlinked attachments | 71 | **0** |
+| 2026 email attachments unlinked | 2 | **2** (correct — no agenda item exists) |
+| Cross-layout duplicate pairs | 31 | **0** |
+| `documents` | 20,197 | **20,166** |
+| `chunks` | 179,081 | **179,026** |
+| Chunks awaiting embedding | 0 | **0** |
+| `facts.*` dangling references | 0 | **0** |
+| Qdrant points | 230,587 | **230,642** |
+
+All 119 records in scope are resolved.
+
+### Observation — `QDRANT_URL` uses `localhost`, not `127.0.0.1`
+
+The pipeline logged `PUT http://localhost:6333/...`, so `.env` sets `QDRANT_URL` with
+`localhost`. `CLAUDE.md` requires `127.0.0.1` for Podman services because Fedora resolves
+`localhost` to `::1` first while the containers bind IPv4 only.
+
+It resolved correctly here (`200 OK`), so this is **latent, not active** — but it is exactly
+the condition that rule exists to prevent, and it would fail if resolver behaviour or the
+container's port binding changed. Worth correcting in `.env` to `http://127.0.0.1:6333`.
+Flagged only; `.env` was not modified.
+
+### Open item carried forward — `transformers` advisories (medium urgency)
+
+`pip-audit` on the `embedding_pipeline` venv reports **8 advisories in `transformers`
+4.57.6**, including PYSEC-2025-217, PYSEC-2026-2288, PYSEC-2026-2289, PYSEC-2026-2290 and
+PYSEC-2026-3929. Fixes land in the 5.x line.
+
+**Not actionable within this task, by operator decision.** The upgrade requires abandoning
+the `numpy` 1.26 / Python 3.12 pin, and it changes the embedding stack underneath a corpus
+of 179,026 vectors. It needs an **embedder-equivalence fixture** — embed a fixed sample
+before and after and compare bitwise — because a silent change in vector output would
+invalidate the collection without any error surfacing. Its own task, with its own
+verification.

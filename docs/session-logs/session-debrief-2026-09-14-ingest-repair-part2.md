@@ -3,7 +3,9 @@
 **Session scope**: Part 2 of the controlled repair. Operator approved steps a, b, d, then c last, with an added instruction for (c): capture the 110 orphaned Qdrant point IDs to a file *before* the delete, and do not touch Qdrant. Executed in that order.
 **Branch/project**: `ksd-main` on Smeltor, branch `claude/feat-facts-minutes`. PostgreSQL `boarddocs` container via `podman exec`. Report at `reports/ingest-repair-2026-09-13.md` (Part 2 appended; Part 1 left unedited so plan and outcome can be compared).
 
-**Outcome**: b, d and c complete and verified. **Step (a) only half complete** — a1 (`document_processor`) ran; a2 (`embedding_pipeline`) did not, so the brief's "confirm chunk *and embedding* rows exist for each" is not yet satisfied.
+**Outcome**: **All approved steps complete and verified — a1, a2, b, d, c.** The repair is closed: 0 unprocessed 2026 agenda items, 0 unlinked 2026 BoardDocs attachments, 0 duplicate pairs, 0 chunks awaiting embedding, 0 dangling `facts.*` references. Qdrant 230,587 → 230,642 (+55, exact).
+
+*(This debrief was first written when a2 was still outstanding; the a2 section below was added after it ran. Earlier statements that step (a) was half complete were true at the time and are superseded.)*
 
 ## Decisions
 
@@ -92,3 +94,94 @@ The Part 2 report section was staged via the Write tool into `reports/.part2-fra
 5. **The allowlist question.** `validate-pip-install.sh` cannot pass until `/home/donald/workspace/.claude/approved-packages.txt` exists. Decide whether it should exist (created deliberately by you from a known-good set) or whether agent installs should always route through you.
 
 6. **`boarddocs-postgres` still publishes `0.0.0.0:5432`**, and the commit-signing identity is still the placeholder `YOUR_EMAIL_HERE`. Both unchanged from Part 1.
+
+---
+
+## Addendum — step a2 executed, and the decisions around it
+
+### The chrome question was settled by decision, not by code
+
+**Operator decision: accept the nav prefix for these 48.** `strip_html` and the **81
+affected documents** (33 pre-existing + the 48 from this repair) go to the rebuild's
+**chunk-header pass** as fixtures.
+
+This is the better outcome than the fix I had been leaning toward. Patching `strip_html`
+mid-repair would have been an unreviewed change to code shared by 20,166 documents, and it
+would have fixed the 48 while leaving the 33 pre-existing cases untouched and undiscovered.
+Routing all 81 to a pass that is explicitly about chunk headers keeps them together, gives
+them a named owner, and turns a defect into a test fixture. The boilerplate is now embedded
+deliberately rather than tolerated by omission.
+
+### a2 ran clean
+
+Invariant re-verified immediately before the run — 55 pending chunks across exactly 48
+`agenda_item` documents, single row, nothing else pending corpus-wide. `--limit 55` was
+passed as an extra cap because the selection query has no `ORDER BY`; nothing had changed,
+so it was never load-bearing.
+
+Dry run: 1024 dimensions, **L2 norm 1.000000**, full payloads, nothing written. Real run:
+**55 embedded, 0 failed**, Qdrant `200 OK`.
+
+Both sides reconcile exactly:
+
+| | Before | After |
+|---|---|---|
+| Chunks `complete` | 178,971 | **179,026** |
+| Chunks `pending` | 55 | **0** |
+| Qdrant `points_count` | 230,587 | **230,642** |
+
+178,971 + 55 = 179,026 and 230,587 + 55 = 230,642. Only the 55 moved.
+
+`Failed: 0` mattered more than it appears: `pipeline.py:43` marks failures `failed`, and the
+selection query reads only `pending`, so any failed row would have been silently skipped on
+re-run and needed a manual reset first.
+
+### I raised a false alarm and checked it before acting on it
+
+The dry-run payload appeared to contain `Board.nsf/goto?open&amp;id=...`. Had that been
+real, every agenda-item citation URL in the collection would have been malformed — worth
+stopping for. It was a display artifact of how bash output renders into the session
+transcript. The stored value has a literal `&`, and **0 of 20,166** documents contain the
+entity. The same escaping had turned `Board Reports & Discussion` into
+`Board Reports &amp; Discussion` in the a1 log an hour earlier, which I had read past
+without noticing.
+
+Worth keeping in mind for this environment: **bash output in the transcript is
+HTML-escaped**, so `&`, `<` and `>` in command output cannot be trusted at face value.
+Verify against the database before treating one as a data defect.
+
+## New open items from a2
+
+1. **`transformers` 4.57.6 — 8 advisories (MEDIUM urgency).** `pip-audit` on the
+   `embedding_pipeline` venv reports PYSEC-2025-217, PYSEC-2026-2288, PYSEC-2026-2289,
+   PYSEC-2026-2290 and PYSEC-2026-3929 among them; fixes are in the 5.x line.
+
+   **Deliberately not handled here.** The upgrade means leaving the `numpy` 1.26 / Python
+   3.12 pin, and it swaps the embedding stack underneath 179,026 live vectors. It needs an
+   **embedder-equivalence fixture** — embed a fixed sample before and after, compare
+   bitwise — because a silent change in vector output would invalidate the collection
+   without raising a single error. That is its own task with its own verification plan, not
+   a tail-end item on a data repair.
+
+2. **`QDRANT_URL` uses `localhost`, not `127.0.0.1`.** The pipeline logged
+   `PUT http://localhost:6333/...`. `CLAUDE.md` requires `127.0.0.1` for Podman services
+   because Fedora resolves `localhost` to `::1` first while the containers bind IPv4 only.
+
+   It resolved correctly here, so this is **latent, not active** — but it is precisely the
+   condition that rule exists to prevent, and it would fail if resolver behaviour or the
+   port binding changed. One-line fix in `.env` to `http://127.0.0.1:6333`. Flagged only;
+   `.env` was never read or modified by this session.
+
+3. **`embedding_pipeline/venv/` now exists** (Python 3.12.14, ONNX Runtime 1.30.0 CPU,
+   11/11 tests). `CLAUDE.md`'s description of these venvs reflects production, not Smeltor —
+   both had to be built during this work. Worth reconciling the doc with reality.
+
+## Superseded from the body above
+
+- "Step (a) only half complete" and the entries under *Unfinished / Deferred* items 1 and 2
+  (a2, and the chrome decision) are now closed. Items 3–6 there still stand: RC2 (Qdrant
+  cleanup of the 110 orphaned points), RC1 (content-hash dedupe key), and the NULL
+  `metadata.item_name` / `item_order` on the 40 linked rows. `reports/.part2-fragment.md`
+  has been deleted by the operator.
+- The Qdrant baseline that item 2 of *Open Items* said was never captured **was** captured
+  by the operator: 230,587 before, 230,642 after.

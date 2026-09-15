@@ -734,3 +734,142 @@ WHERE d.document_type='attachment' AND d.agenda_item_id IS NULL
 `boarddocs_loader/` (via prior diagnostic), `CLAUDE.md`, `reports/ingest-degradation-2026-09-13.md`,
 `docs/session-logs/session-debrief-2026-09-13-ingest-degradation-diagnostic.md`,
 `~/workspace/projects/ksd-boarddocs-rag/logs/sessions/` (read-only, operator-approved).
+
+---
+
+## Addendum — 2026-09-14: step **a** split into **a1** and **a2**
+
+*Appended per the append-only convention. The decision table above is unchanged; this
+expands its step **a** ("Stage 2 on the 48"), which was incomplete — processing the 48
+produces chunks, but chunks are not searchable until they are embedded. Running a1 without
+a2 leaves the 48 items loaded, chunked, and still invisible to the RAG API.*
+
+### Prerequisite — venvs (blocking, applies to both)
+
+`CLAUDE.md`'s `document_processor/venv/` line describes **production**. On Smeltor no venv
+existed for either component (verified 2026-09-13).
+
+- `document_processor/` — venv **created 2026-09-14** via its own `./setup.sh`. Python
+  3.14.3, 31 packages, **35/35 tests pass**.
+- `embedding_pipeline/` — venv **still missing**. `./setup.sh` must run before a2. The ONNX
+  `model_cache/mxbai-embed-large-v1-onnx/` (1.3 GB) is already present, so no model download
+  is needed.
+
+### Step a1 — `document_processor` on the 48 *(unchanged from step a)*
+
+```bash
+cd ~/workspace/projects/ksd-main/document_processor && ( \
+  set -a; . ../.env; set +a; \
+  export DATABASE_URL="postgresql://boarddocs:${POSTGRES_PASSWORD}@127.0.0.1:5432/boarddocs"; \
+  source venv/bin/activate; \
+  python -m document_processor --document-type agenda_item --workers 4 --dry-run )
+```
+
+Drop `--dry-run` for the real run. `--dry-run` processes 5 documents and writes nothing.
+
+Verify:
+
+```sql
+SELECT processing_status, count(*) FROM documents
+WHERE document_type='agenda_item' GROUP BY 1;
+-- expect: pending -> 0, complete -> 6,529
+```
+
+### Step a2 — `embedding_pipeline` for the newly created chunks
+
+**Scoping note — read before running.** `embedding_pipeline` has **no `--document-type`,
+`--document-id` or equivalent flag.** It selects work solely by status
+(`pipeline.py:28`: `WHERE c.embedding_status = 'pending' AND c.tenant_id = $1`). It therefore
+cannot be pointed at "the 48" directly.
+
+It does not need to be, because of a verified invariant:
+
+| Check (2026-09-14) | Result |
+|---|---|
+| `chunks` by `embedding_status` | `complete` = 179,081; **`pending` = 0** |
+| Chunks belonging to the 48 pending agenda items | **0** |
+
+Every existing chunk is already embedded, and the 48 have no chunks yet. So **after a1, the
+only `pending` chunks in the table are the ones a1 just created** — an unscoped run is
+naturally scoped to exactly those documents.
+
+**Confirm the invariant still holds immediately before running a2** (it breaks if anything
+else creates chunks in between):
+
+```sql
+SELECT count(*) AS pending_chunks,
+       count(DISTINCT c.document_id) AS distinct_docs
+FROM chunks c WHERE c.embedding_status = 'pending';
+
+-- and confirm they all belong to the 48:
+SELECT d.document_type, d.processing_status, count(*) AS chunks
+FROM chunks c JOIN documents d ON d.id = c.document_id
+WHERE c.embedding_status = 'pending' GROUP BY 1,2;
+-- expect a single row: agenda_item | complete | <n>
+```
+
+If `distinct_docs` exceeds 48, or any row is not `agenda_item`, **stop** — something else is
+queued and an unscoped run would embed it too.
+
+**Setup (once), then the run:**
+
+```bash
+cd ~/workspace/projects/ksd-main/embedding_pipeline && ./setup.sh
+
+cd ~/workspace/projects/ksd-main/embedding_pipeline && ( \
+  set -a; . ../.env; set +a; \
+  export DATABASE_URL="postgresql://boarddocs:${POSTGRES_PASSWORD}@127.0.0.1:5432/boarddocs"; \
+  source venv/bin/activate; \
+  python -m embedding_pipeline --dry-run )
+```
+
+`--dry-run` fetches 3 chunks, embeds them, prints vectors and payloads, and writes nothing.
+Drop it for the real run. `QDRANT_URL` comes from `.env` (present); `--collection` defaults
+to `boarddocs_chunks`, `--batch-size` to 256, `--tenant` to `kent_sd`.
+
+### Verification after a2
+
+```sql
+-- 1. No pending chunks left, none failed
+SELECT embedding_status, count(*) FROM chunks GROUP BY 1 ORDER BY 2 DESC;
+-- expect: complete = 179,081 + <n>, pending = 0, failed = 0
+
+-- 2. The 48 specifically are fully embedded
+SELECT d.processing_status,
+       c.embedding_status,
+       count(*) AS chunks,
+       count(DISTINCT d.id) AS docs
+FROM documents d JOIN chunks c ON c.document_id = d.id
+WHERE d.document_type = 'agenda_item'
+  AND d.meeting_date = '2026-03-25'
+GROUP BY 1,2;
+-- expect: complete | complete | <n> | 48
+
+-- 3. Model stamp is the expected one
+SELECT DISTINCT embedding_model FROM chunks WHERE embedding_status='complete';
+-- expect: mxbai-embed-large-v1
+```
+
+Then confirm the vectors actually reached Qdrant — the point count must rise by the same
+`<n>`, otherwise PostgreSQL says `complete` while retrieval still cannot see them:
+
+```bash
+# record before a2, compare after
+( set -a; . ~/workspace/projects/ksd-main/.env; set +a; \
+  python3 -c "
+import os,urllib.request,json
+u=os.environ['QDRANT_URL'].rstrip('/')+'/collections/boarddocs_chunks'
+print(json.load(urllib.request.urlopen(u))['result']['points_count'])" )
+```
+
+**Any `failed` chunks:** `pipeline.py:43` sets `embedding_status='failed'` on error. A
+non-zero `failed` count means a2 partially succeeded — re-running picks up only `pending`,
+**not** `failed`, so failed rows must be reset to `pending` by hand before a retry.
+
+### Why a2 is not optional
+
+Per `CLAUDE.md` the embedding cron is commented out, so nothing will pick these up later.
+Without a2 the 48 items — 42 from meeting `DS4MSK5CA5C5`, 2 from `DS4MVC5CCBE6`, 4 from
+`DSCM9K5A287D`, all 2026-03-25 — remain absent from every RAG answer while appearing
+`complete` in `documents`. That is the failure mode the original incident already produced
+once: data present in PostgreSQL, invisible to retrieval.

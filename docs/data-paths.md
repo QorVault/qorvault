@@ -137,6 +137,25 @@ dev host):
 in PostgreSQL. Not a code reference and unaffected by any filesystem move. Any tooling that
 resolves `file_path` from the database will fail on this host until it is rewritten or mapped.
 
+### Non-data stale claims in `CLAUDE.md` (same correction batch)
+
+**`document_processor/venv/` does not exist on Smeltor.** `ksd-main/CLAUDE.md` states *"Doc
+processor venv path: `document_processor/venv/` (not `.venv`)"*. That describes the
+**production** host. Verified 2026-09-13: neither `venv/` nor `.venv/` existed under
+`document_processor/` **or** `embedding_pipeline/`, in `ksd-main` or in the guarded tree.
+Running `python3 -m document_processor` with the system interpreter fails at
+`ModuleNotFoundError: No module named 'bs4'`.
+
+Current state after 2026-09-14 setup:
+
+| Component | venv | Notes |
+|---|---|---|
+| `document_processor/` | **created** 2026-09-14 via its own `./setup.sh` | Python 3.14.3, 31 packages, 35/35 tests pass |
+| `embedding_pipeline/` | **still missing** | `./setup.sh` not yet run; ONNX `model_cache/` (1.3 GB) is present |
+
+Both components ship a `setup.sh` that creates the venv, installs `requirements.txt` and runs
+the tests. Treat `CLAUDE.md`'s venv line as describing production only.
+
 Because the loader's *defaults* are Variants A and B, a default-invocation run on Smeltor
 fails immediately with a missing-directory error rather than silently ingesting the wrong
 tree. The real risk is a hand-typed `--data-dir`, or someone "fixing" a stale default to the

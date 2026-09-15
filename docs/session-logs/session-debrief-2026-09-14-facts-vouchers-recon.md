@@ -282,3 +282,163 @@ python3 -m venv .venv
 There is no export to regenerate yet: `export_cycle.py`, the views and the sample
 files are Phase 1 deliverables and Phase 1 has not been authorised. The Phase 0
 report's Appendix A carries every command run this session.
+
+---
+
+# Part 2 — Phase 1 built (same session, same branch)
+
+**Date:** 2026-09-15
+**Git ref:** `da22888` (Phase 0), `0f1f753` (Phase 0 debrief), Phase 1 commit below
+**Report:** `reports/facts-vouchers-reconciliation-2026-09-15.md`
+
+Operator approved Phase 1 with seven decisions and added 2026-05-27 to the hard
+fixtures. **446 sets, 464,253 lines, 12,270 vendors, 128 register cross-checks.
+13 hard fixtures pass, none fails, 15 are blocked on documents that are not on this
+machine. All six independent advisory figures match to the cent.**
+
+## Decisions (Part 2)
+
+**The staged-PDF path is built and the staging directories are empty.** The operator
+created `~/workspace/staging/vouchers-2026/{2026-06-24,2026-07-22,2026-08-26}/` and no
+file was ever placed in them — verified at creation, again 45 seconds later, and by
+sweeping `/home/donald` for any PDF created in the preceding 30 minutes. The root is
+nonetheless a first-class corpus root with its bare-ISO directory naming understood and
+`source = 'staged_pdf'` wired through, so the three months complete with **no code
+change** the moment the packets land. 15 fixtures are BLOCKED, not failed, and not
+counted as passes.
+
+**`reconciled` is nullable, and that was the right call.** 331 sets print no total.
+Marking them `false` would assert the district's arithmetic is wrong when what is true
+is that the document states no arithmetic.
+
+**"Cumulative" is measured from check-number overlap, not inferred from the era.** The
+decision as written implied tagging Era C. That would have been wrong: the Era C column
+header is **still in use in 2026**, so an era tag would have branded current, clean sets
+as restatements. Measuring instead found the behaviour is far broader than the
+Transportation example that surfaced it — **145 of 446 sets across five funds**, not an
+Era C subset. This is a deviation from D5 as written and is flagged as such.
+
+**I pushed back on D5's recap anchor before building it, and the pushback held.** Recaps
+carry a machine-readable total for 2020 and 2021 only, and their scope is the register's,
+not the listing's. Implemented as `recap_fund_total` with reason `SCOPE_DIFFERS` rather
+than as a fixture that would have failed for a reason already known.
+
+**The register basis is warrant ranges plus the P-card line, nothing else.** Including
+DOR use taxes and L&I self-insurance — which no listing contains — produced mismatches
+of −$2,228,600 on ACH and −$26,000 on Capital where Phase 0 had proved both exact.
+
+**The export's allow-list was widened after looking at what it withheld.** As first
+written it withheld 43% of a cycle's money, including Puget Sound Energy and City of
+Kent. That is not a privacy control, it is a broken report. Now 2.5%, of which 169 of
+218 payees are genuinely `Surname, Given`.
+
+**No LLM in any amount, date, vendor, check-number or total path.** `vendor.category`
+is NULL for all 12,270 vendors; no LLM step was run at all.
+
+## What changed (Part 2)
+
+| File | Purpose |
+|---|---|
+| `facts/common/paths.py` + `__init__.py` | **New shared module** (D3). Two stale roots, the staging root, staged-vs-scraped classification. |
+| `facts/vouchers/schema.sql` | **New.** 5 tables. Nullable `locator_document_id`, NOT NULL `locator_file_path`/`_sha256`, nullable `reconciled`, 9-value fund enum. |
+| `facts/vouchers/views.sql` | **New.** 8 views. |
+| `facts/vouchers/parsers.py` | **New.** Four era parsers, TOTAL selection, register parser. |
+| `facts/vouchers/vendors.py` | **New.** Deterministic normalization; export allow-list. |
+| `facts/vouchers/build.py` | **New.** The loader. |
+| `facts/vouchers/fixtures.py` | **New.** HARD / advisory / contract fixtures. |
+| `facts/vouchers/relink.py` | **New.** Idempotent document-id attach keyed on digest (D2). |
+| `facts/vouchers/samples.py` | **New.** Seeded traceable samples. |
+| `facts/vouchers/export_cycle.py` | **New.** One-cycle briefing, markdown + CSV. |
+| `facts/vouchers/locators.py` | Delegates path resolution to `facts/common`; gains `sha256_of`. |
+| `facts/vouchers/test_parsers.py` | **New.** Tests 99 → 185. |
+| `exports/` (10 files), `facts/vouchers/samples/` (15 files) | Generated. |
+
+Database: `schema.sql`, `views.sql`, then `build.py --reload`. **Nothing outside schema
+`facts` was written**; minutes tables verified at 1,646 / 6,507 / 19,633 / 3,515 / 280
+and `documents` / `chunks` at 20,166 / 179,026 after every rebuild.
+
+## Findings (Part 2)
+
+**Four bugs, each producing plausible numbers, each caught by measurement or a test
+rather than by reading code.**
+
+1. **The register amount capture read the issue date as money.**
+   `530157-530158 3/5/2026 355.27` → **$2,026,355.27**;
+   `2/11/26-3/12/26 403.45` → **$26,403.45**. Caught by a unit test on a four-line
+   synthetic register; the corpus run looked fine. Fixed by requiring a whitespace
+   boundary.
+2. **The register cross-check compared the wrong scope** (above).
+3. **Requiring cents on every amount dropped 2,108 real rows.** I shipped that rule
+   after measuring it on twelve well-behaved files, where it changed nothing, and wrote
+   in the source that it "changed not one row or total". Across the corpus it took nine
+   sets from reconciled to out-of-balance, because this data prints `123.4` and `132`.
+   Reverted, with the real measurement recorded in place of the claim.
+4. **The export withheld 43% of the money** (above).
+
+**The 33 out-of-balance sets are one diagnosed cause, not a mystery.** On 2025-04-23 GF,
+`WSCA 4/3/2025 603163 11,325.00 325 2025 WSCA Counselor...` reads `325 2025` as
+**$3,252,025.00** — the invoice amount has no decimal and the description begins with a
+year. I measured both regex-only alternatives across all 101 sets that have a stated
+total: **net zero change** in how many reconcile. The fix is column-position anchoring
+using pdfplumber word coordinates, filed as R1. All four 2026-03-25 and all five
+2026-05-27 sets reconcile, so the cycles actually quotable are clean.
+
+**Two ASB warrants are on the board's signed register and not in the public listing.**
+`418227` ($30.00) and `418236` ($551.50), exactly the −$581.50 delta. Stored as
+`REGISTER_MISMATCH` with both locators and deliberately not resolved, per D7.
+
+**The multi-year `parsed_total` columns look impossible and are correctly reported.**
+$708M in 2020, $946M in 2021, against a ~$400M district. That is the sum of what the
+documents say, restatements included. No view or export presents it as spending.
+
+## Open Items (Part 2)
+
+R1 column-position amount parsing (highest priority — 33 sets, incl. a $110M
+over-parse); R2 the 331 sets with no stated total; R3 no deduplicated multi-cycle total
+exists yet for the 145 cumulative sets; R4 2010–2016 unreadable; R5 carry the two-root
+path fix into `facts/minutes` (not touched, per D3); R6 corpus six months stale;
+R7 one duplicate set on 2026-02-11. Full detail in the report's §11.
+
+## System state (Part 2)
+
+- Schema `facts`: 5 new voucher tables, 8 new views. The 6 minutes tables and 6 minutes
+  views untouched. No row deleted outside `facts`.
+- `documents`, `chunks`, Qdrant, `rag_api`, `ksd-boarddocs-rag`, production: never
+  written. All corpus reads `READ ONLY`.
+- 185 tests. `ruff check` clean, `ruff format` clean, `interrogate` 98.3%, `bandit`
+  0 medium / 0 high, `pip-audit` no known vulnerabilities.
+- SQL is composed with `psycopg2.sql` identifier quoting — no f-string SQL anywhere.
+- `pg_trgm` deliberately **not** installed: `CREATE EXTENSION` is database-wide, outside
+  schema `facts`, and is the operator's decision.
+- Credentials injected at runtime; `.env` neither read nor edited; no password printed.
+- No hook bypassed. Pre-commit ran and passed on every commit.
+
+## Regenerating an export
+
+```bash
+cd ~/workspace/projects/ksd-vouchers/facts/vouchers
+
+export PGPASSWORD=$(podman inspect boarddocs-postgres \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^POSTGRES_PASSWORD=' | cut -d= -f2-)
+
+.venv/bin/python export_cycle.py 2026-03-25
+# -> exports/facts-vouchers-2026-03-25.md  and  .csv
+```
+
+Full rebuild from scratch:
+
+```bash
+cd ~/workspace/projects/ksd-vouchers/facts/vouchers
+export PGPASSWORD=...   # as above
+
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < schema.sql
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < views.sql
+
+.venv/bin/python build.py --reload --progress    # ~20 min, 667 PDFs
+.venv/bin/python -m pytest -q                    # 185 passed
+.venv/bin/python fixtures.py                     # 13 PASS / 0 FAIL / 15 BLOCKED, exit 0
+.venv/bin/python samples.py                      # 15 files, seed 20260914
+```

@@ -1,137 +1,87 @@
 """Locator resolution for voucher fact rows.
 
-Every voucher fact row must carry the source document, a page number, a
-character offset and a verbatim quote. Chunk ids are never a locator.
+Every voucher fact row must carry the source file, a page number, a
+character offset and a verbatim quote. Chunk ids are never a locator, and a
+``document_id`` is never guessed: where ingest has not produced one, the row
+is anchored by file path and SHA-256 instead and relinked later.
 
-``facts/minutes/locators.py`` established that Postgres holds no page-level
-text: ``document_pages`` is empty and ``chunks.source_page`` is NULL corpus
-wide. Page numbers therefore come from re-reading the source PDF with
-pdfplumber, and so does the text the parser runs on -- the voucher row regex
-depends on column geometry that ``documents.content_text`` does not preserve.
+Phase 0 established that Postgres holds no page-level text: ``document_pages``
+is empty and ``chunks.source_page`` is NULL corpus wide. Page numbers
+therefore come from re-reading the source PDF with pdfplumber, and so does
+the text the parser runs on -- the voucher row regex depends on column
+geometry that ``documents.content_text`` does not preserve.
 
-Two differences from the minutes package, both established by Phase 0 recon:
-
-1. ``documents.file_path`` is stale under **two** different roots, not one.
-   The 2005-2026 bulk corpus is rooted at ``/home/donald/ksd_forensic/``; a
-   later 2026 re-scrape is rooted at
-   ``/home/donald/workspace/projects/ksd_forensic/`` and its ``data``
-   directory has since been renamed ``data_DO_NOT_LOAD``. The minutes
-   package's single prefix rewrite resolves the first and silently misses
-   the second.
-
-2. Voucher PDFs exist on disk that have **no ``documents`` row at all** (the
-   2026-03-25 and 2026-05-27 sets). Those are addressed by path, so this
-   module resolves in both directions: document -> path, and path -> the
-   meeting it belongs to.
+Path resolution lives in ``facts/common/paths.py`` because more than one
+fact package needs the same answer to "where does this file actually live".
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
+
+# facts/ is the parent of this package; facts/common is shared code.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from common.paths import (  # noqa: E402  - path bootstrap must precede the import
+    CORPUS_ROOTS,
+    MEETING_SLUG_RX,
+    PATH_REWRITES,
+    STAGED_ROOTS,
+    STAGING_ROOT,
+    is_staged,
+    meeting_date_from_path,
+    resolve_any_path,
+    resolve_pdf_path,
+    source_kind,
+)
+
+__all__ = [
+    "CORPUS_ROOTS",
+    "MEETING_SLUG_RX",
+    "PATH_REWRITES",
+    "STAGED_ROOTS",
+    "STAGING_ROOT",
+    "PageText",
+    "PdfText",
+    "is_staged",
+    "make_quote",
+    "meeting_date_from_path",
+    "resolve_any_path",
+    "resolve_pdf_path",
+    "sha256_of",
+    "source_kind",
+]
 
 LOG = logging.getLogger(__name__)
 
-# Ordered (stale prefix, replacement) pairs. First existing hit wins.
-#
-# Order matters: the workspace rewrite must be tried before the bare
-# /home/donald/ rewrite, because the workspace paths also start with
-# /home/donald/ and the archive has no workspace/ subtree -- an unordered
-# match would resolve nothing and look like a missing file.
-PATH_REWRITES: tuple[tuple[str, str], ...] = (
-    # Later 2026 re-scrape. The live tree still holds the files; only the
-    # leaf directory was renamed after ingest.
-    (
-        "/home/donald/workspace/projects/ksd_forensic/boarddocs/data/",
-        "/home/donald/workspace/projects/ksd_forensic/boarddocs/data_DO_NOT_LOAD/",
-    ),
-    # Bulk 2005-2026 corpus. Its only surviving copy is the backup archive.
-    (
-        "/home/donald/ksd_forensic/",
-        "/home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/",
-    ),
-    # Generic archive fallback, as used by facts/minutes.
-    (
-        "/home/donald/",
-        "/home/donald/qorvault-dev-archive/framework-backup/home/",
-    ),
-)
 
-# Corpus roots that hold voucher PDFs, whether or not a documents row exists.
-CORPUS_ROOTS: tuple[str, ...] = (
-    "/home/donald/qorvault-dev-archive/framework-backup/home/ksd_forensic/boarddocs/data",
-    "/home/donald/workspace/projects/ksd_forensic/boarddocs/data_DO_NOT_LOAD",
-    "/home/donald/workspace/meeting_files",
-)
+def sha256_of(path: str) -> str | None:
+    """Return the SHA-256 digest of a file, or None if unreadable.
 
-# Meeting directory slugs begin with an ISO date: "2026-03-25-regular-...".
-MEETING_SLUG_RX = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(.*)$")
-
-
-def resolve_pdf_path(file_path: str | None) -> str | None:
-    """Map a stored ``documents.file_path`` onto a file that actually exists.
+    The digest is the durable half of a locator. A path can change when a
+    directory is renamed -- which has already happened once in this corpus --
+    but the digest identifies the exact bytes a quote was read from, and it
+    is the key the relink step uses to attach a document id later.
 
     Args:
-        file_path: Value of ``documents.file_path``, possibly stale or None.
+        path: Filesystem path.
 
     Returns:
-        An existing filesystem path, or None if nothing resolves.
+        Hex digest, or None when the file cannot be read.
     """
-    if not file_path:
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
         return None
-    if os.path.isfile(file_path):
-        return file_path
-    for stale, replacement in PATH_REWRITES:
-        if file_path.startswith(stale):
-            candidate = file_path.replace(stale, replacement, 1)
-            if os.path.isfile(candidate):
-                return candidate
-    return None
-
-
-def resolve_any_path(file_path: str | None) -> str | None:
-    """Resolve a stored path to a file **or** directory that exists.
-
-    BoardDocs agenda items are scraped as directories, so a voucher agenda
-    item's ``file_path`` names a directory rather than a file.
-
-    Args:
-        file_path: Value of ``documents.file_path``, possibly stale or None.
-
-    Returns:
-        An existing filesystem path, or None if nothing resolves.
-    """
-    if not file_path:
-        return None
-    if os.path.exists(file_path):
-        return file_path
-    for stale, replacement in PATH_REWRITES:
-        if file_path.startswith(stale):
-            candidate = file_path.replace(stale, replacement, 1)
-            if os.path.exists(candidate):
-                return candidate
-    return None
-
-
-def meeting_date_from_path(path: str) -> str | None:
-    """Extract the meeting date encoded in a corpus path's meeting directory.
-
-    The scraped directory name carries the meeting date, which is the only
-    date available for a PDF that has no ``documents`` row.
-
-    Args:
-        path: Any path beneath a corpus root.
-
-    Returns:
-        ISO date string, or None when no meeting slug is present.
-    """
-    for part in os.path.normpath(path).split(os.sep):
-        m = MEETING_SLUG_RX.match(part)
-        if m:
-            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return None
 
 
 @dataclass(frozen=True)
@@ -154,8 +104,8 @@ class PageText:
 class PdfText:
     """Layout-preserved text of a voucher PDF, with page boundaries kept.
 
-    The voucher parser needs three things at once: the text of each row,
-    the page that row is printed on, and a character offset that lets the
+    The voucher parser needs three things at once: the text of each row, the
+    page that row is printed on, and a character offset that lets the
     operator find it again. Extracting page by page and remembering the
     boundaries gives all three without a second pass or a proportional
     estimate -- offsets here are exact, not scaled.
@@ -196,7 +146,7 @@ class PdfText:
     @property
     def has_text_layer(self) -> bool:
         """Whether the PDF carries extractable text rather than only images."""
-        return any(p.text.strip() for p in self.pages)
+        return any(page.text.strip() for page in self.pages)
 
     def page_for_offset(self, offset: int) -> int | None:
         """Return the page number containing a character offset.

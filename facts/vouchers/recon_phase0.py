@@ -108,6 +108,12 @@ HEADER_TOKENS = ("Vendor", "Check", "Invoice", "Description", "Amount", "Number"
 def money(raw: str) -> Decimal | None:
     """Parse a printed amount into an exact Decimal.
 
+    This is the Phase 0 version and is deliberately left as it was. The
+    canonical parser is ``parsers.money``, which adds a thousands-grouping
+    check. Changing this one would silently alter the figures in
+    ``reports/facts-vouchers-recon-2026-09-14.md``, which is the record of
+    what Phase 0 actually measured.
+
     Args:
         raw: Amount as printed, possibly with commas or stray spaces.
 

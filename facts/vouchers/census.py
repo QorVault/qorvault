@@ -22,7 +22,6 @@ name-based rule would keep ``GF Vouchers 3-25-26.pdf`` and
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from classify import (
     fiscal_year,
     fund_from_title,
 )
-from locators import CORPUS_ROOTS, meeting_date_from_path, resolve_pdf_path
+from locators import CORPUS_ROOTS, meeting_date_from_path, resolve_pdf_path, sha256_of
 
 # A candidate is anything whose title or file name uses the voucher /
 # warrant vocabulary. Deliberately broad: Phase 0's job is to see everything
@@ -183,25 +182,6 @@ def _classify(art: Artifact) -> Artifact:
         if art.doc_class is None:
             art.exclusion = "unclassified"
     return art
-
-
-def sha256_of(path: str) -> str | None:
-    """Return the SHA-256 digest of a file, or None if unreadable.
-
-    Args:
-        path: Filesystem path.
-
-    Returns:
-        Hex digest, or None.
-    """
-    try:
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for block in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(block)
-        return digest.hexdigest()
-    except OSError:
-        return None
 
 
 def db_artifacts(query_dicts) -> list[Artifact]:

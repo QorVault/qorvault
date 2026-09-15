@@ -1,0 +1,18 @@
+# Direct runtime dependencies for the voucher fact layer.
+#
+# Only packages the code actually imports belong here. requirements-lock.txt
+# holds the full resolved set (pip freeze) for reproducible rebuilds.
+#
+# Deliberately identical pins to facts/minutes so the two fact packages never
+# disagree about how a PDF is read or how a row reaches Postgres.
+
+# Page-accurate text extraction from the source voucher PDFs. Needed because
+# Postgres holds no page-level text at all: document_pages is empty and
+# chunks.source_page is NULL corpus-wide, so locator page numbers can only
+# come from re-reading the PDFs. pdfplumber is also the only extractor here
+# that preserves column geometry, which the voucher row regex depends on.
+pdfplumber==0.11.10
+
+# Postgres driver for the loader. Keeps credentials injected at runtime
+# instead of shelling out to `psql` inside the container.
+psycopg2-binary==2.9.13

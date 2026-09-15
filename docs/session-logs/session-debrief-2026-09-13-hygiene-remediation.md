@@ -34,9 +34,12 @@ Nothing else on the host was touched.
 | File | Change |
 |---|---|
 | `…/framework-backup/…/boarddocs/data/boarddocs_scraper.py` | `chmod a-x`, then **moved** to `~/workspace/archive/legacy-flat-scraper/` |
-| `~/workspace/archive/legacy-flat-scraper/README.md` | New — provenance, hash, incident reference, do-not-run warning |
-| `docs/data-paths.md` | New — canonical data locations and known-stale references |
+| `…/framework-backup/…/boarddocs/data/boarddocs_scraper.log` | **Moved** to the same archive directory |
+| `~/workspace/archive/legacy-flat-scraper/README.md` | New — provenance, both hashes, run summary, incident reference, do-not-run warning |
+| `docs/data-paths.md` | New — canonical data locations, archive checksums, known-stale references |
 | `reports/hygiene-2026-09-13.md` | Addendum A1–A6 appended (append-only; §2 given a `SUPERSEDED` pointer) |
+
+Net effect on the backup corpus: two files removed, nothing added. It now contains only its 1,684 meeting directories.
 
 The guarded tree (`ksd-boarddocs-rag`) was read only via `grep`. Its `.env` was not touched. Production was not contacted. The backup corpus received **no new file and no tombstone** — the only change to it was the removal of the scraper.
 
@@ -118,7 +121,9 @@ Deliberately not done: no hard-coded path was edited (operator's, per instructio
 
    **Checksum manifest: no impact.** The only genuine manifest in the archive (`…/ksd-boarddocs-rag/backups/2026-04-03/manifest.json`) is a 228-character database backup summary — `timestamp`, `postgres_dump_size_bytes`, `qdrant_snapshot_size_bytes`, and document/chunk/vector counts. It contains no file paths and no reference to the scraper or the data tree, so **this move invalidates nothing.** Not edited. All other `*manifest*`/`*checksum*` hits under the backup tree are Chromium and pip cache artefacts, unrelated to the corpus.
 
-   **Left in place deliberately: `boarddocs_scraper.log`**, still at the original location, now the only top-level file in that data directory. It is the run log of the incident, carries no execution risk, and moving it was outside the approval. Recommend deciding whether it should follow the scraper into the archive — see Open Item 11 for why it is now more valuable than it looked.
+   **`boarddocs_scraper.log` followed it** on a subsequent approval, under the same conditions. Same-filesystem rename, verified identical: SHA-256 `6bb4e41a3f76123ec81e38e1d18338ed85715853811dc0786076ede7bf599760`, mtime `2026-02-22 11:19:07.268286800 -0800` (epoch `1771787947`), inode `9672209`, 2,262,477 bytes, `-rw-r--r--`. Cause and evidence are now stored together.
+
+   **The corpus directory is now completely clean** — zero top-level files, no tombstone, 1,684 meeting directories and 806 `agenda.html` intact. Both archived files are non-executable. Checksums for both are recorded in `docs/data-paths.md` (which is versioned) with a copy-pasteable `sha256sum -c` block, since the archive directory itself sits outside git; both verify `OK`.
 
    Retained for the record: `chmod a-x` alone (applied earlier) was **not** sufficient — `./boarddocs_scraper.py` was blocked but `python3 boarddocs_scraper.py` still ran. Relocation, not the permission bit, is what closed this.
 

@@ -40,21 +40,49 @@ source. See `~/workspace/archive/legacy-flat-scraper/README.md`.
 - Loading this instead of the authoritative corpus would silently ingest a partial dataset
 - To reverse if ever needed: `chmod -R u+w <path>` then rename back
 
-## Quarantined — legacy flat scraper
+## Quarantined — legacy flat scraper and its run log
 
 ```
-/home/donald/workspace/archive/legacy-flat-scraper/boarddocs_scraper.py
+/home/donald/workspace/archive/legacy-flat-scraper/
 ```
 
-- The scraper that caused the 2026-02-22 ingest degradation (71 unlinked attachment records)
-- Moved here 2026-09-13 from inside the authoritative corpus, where it was executable
-- Stored non-executable; SHA-256 `877529ae3e6f…`, mtime `2026-02-22 07:07:05`, inode preserved
-- **Do not run against any corpus.** Superseded by the structured scraper
-- Full context: `~/workspace/archive/legacy-flat-scraper/README.md`
+The scraper that caused the 2026-02-22 ingest degradation (71 unlinked attachment records),
+and the log of the run that did it. Both moved here on **2026-09-13** from inside the
+authoritative corpus, where the script was executable and both sat loose in a data directory.
 
-Its run log remains at the original location
-(`…/framework-backup/home/ksd_forensic/boarddocs/data/boarddocs_scraper.log`) and was
-deliberately not moved.
+**This directory is deliberately outside git.** The hashes below are the versioned record of
+provenance — verify against them rather than trusting the files alone.
+
+| File | SHA-256 | Size | mtime | inode |
+|---|---|---|---|---|
+| `boarddocs_scraper.py` | `877529ae3e6f3e9fdb20681a4decee54f5854d482a4a42557e24460e7d20539f` | 46,461 | `2026-02-22 07:07:05.409386920 -0800` | `9672210` |
+| `boarddocs_scraper.log` | `6bb4e41a3f76123ec81e38e1d18338ed85715853811dc0786076ede7bf599760` | 2,262,477 | `2026-02-22 11:19:07.268286800 -0800` | `9672209` |
+
+Verify with:
+
+```bash
+cd ~/workspace/archive/legacy-flat-scraper && sha256sum -c <<'EOF'
+877529ae3e6f3e9fdb20681a4decee54f5854d482a4a42557e24460e7d20539f  boarddocs_scraper.py
+6bb4e41a3f76123ec81e38e1d18338ed85715853811dc0786076ede7bf599760  boarddocs_scraper.log
+EOF
+```
+
+Both moves were same-filesystem renames (btrfs, device `37`, subvol `/root`), so inodes
+carried over — these are the original files, not copies. Both are stored non-executable.
+
+**Run summary from the log** — 4h36m, `2026-02-22 06:43:20` → `11:19:07`, 9,126 lines,
+**806 distinct meeting slugs** (2005–2017 heavily, 2018 × 30, 2026 × 9). This is materially
+wider than the 07:02–07:05 / four-meeting window recorded in
+`reports/ingest-degradation-2026-09-13.md` §0.2, and it is the reason all 806 `agenda.html`
+files in the corpus share mtime `2026-02-22`.
+
+- **Do not run the scraper against any corpus.** Superseded by the structured scraper
+- Full context, including why `chmod a-x` alone was insufficient:
+  `~/workspace/archive/legacy-flat-scraper/README.md`
+
+**Original location, now empty of both files:**
+`…/framework-backup/home/ksd_forensic/boarddocs/data/` — that directory holds **only** the
+1,684 meeting directories, with zero top-level files and no tombstone.
 
 ## Supported scraper
 

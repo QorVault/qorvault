@@ -727,3 +727,415 @@ SELECT meeting_id, cause, count(*) AS motions,
 
 SELECT * FROM facts.attendance_vote_discrepancies WHERE cause IS NULL;  -- must be empty
 ```
+
+---
+
+# Part 2 — R7 and R8 applied (same day, same branch)
+
+Operator approved R7 (vote-roll bleed) and R8 (locator quote cap), followed by
+a full reload, export regeneration and a dated addendum to the 2026-09-13 run
+report. This part records that work. Everything above describes the state
+*before* the reload.
+
+**All four hard fixtures are now green or legitimately blocked, and
+`fixtures.py` exits 0 for the first time.**
+
+| Fixture | Part 1 | Part 2 |
+|---|---|---|
+| `exec_sessions_2024` | PASS | **PASS** |
+| `attendance_vote_discrepancies` | PASS (6 known) | **PASS (5 known)** |
+| `disposition_and_locator` | FAIL (43) | **PASS (0)** |
+| `operator_hand_counts` | BLOCKED | **BLOCKED** (awaiting counts) |
+
+Unit tests: **80 passing** (70 → 80).
+
+## 1. Row counts before and after the reload
+
+`build.py --reload`, 1m12s, 874 minutes documents and 2,543 agenda items.
+
+| Table | Before | After | Delta |
+|---|---:|---:|---:|
+| `facts.meeting` | 1,646 | 1,646 | 0 |
+| `facts.attendance` | 3,515 | 3,515 | 0 |
+| `facts.motion` | 6,507 | 6,507 | 0 |
+| `facts.vote` | 19,625 | **19,613** | **−12** |
+| `facts.executive_session` | 280 | 280 | 0 |
+| `facts.minutes_parse_log` | 874 | 874 | 0 |
+
+Secondary figures:
+
+| Metric | Before | After | Delta |
+|---|---:|---:|---:|
+| `motion` by source: agenda_item / minutes | 4,214 / 2,293 | 4,214 / 2,293 | 0 / 0 |
+| `motion` by disposition: adopted / lost / withdrawn | 6,391 / 115 / 1 | 6,391 / 115 / 1 | 0 |
+| Motions with `vote_format='named'` | 4,213 | **4,210** | **−3** |
+| Longest `motion.locator_quote` | 400 | **3,516** | +3,116 |
+| Motion quotes over 400 chars | 0 | **45** | +45 |
+| Parse status: parsed / superseded | 795 / 79 | 795 / 79 | 0 |
+
+**There are exactly two deltas, and both are explained below in full. Nothing
+else moved.**
+
+### Delta 1 — `facts.vote` −12 rows
+
+Every one of the 12 was spurious. I verified this by running the old and new
+parsers side by side over all 2,543 agenda items and diffing their output, not
+by reasoning about it. Only **two documents** differ, across 4 motions:
+
+| Document | Meeting | Motion | Votes removed |
+|---|---|---|---|
+| `1479b410` | 2025-12-10 regular | `#a18` | Donald Cook (no), Andy Song (no) |
+| `1479b410` | 2025-12-10 regular | `#a19` | **`None` (no)** |
+| `1479b410` | 2025-12-10 regular | `#a20` | Andy Song (yes), Laura Williams (yes), Teresa Gregory (yes), Donald Cook (no), Meghin Margel (no) |
+| `69513d40` | 2025-02-11 special | `#a1` | Song (yes), Clark (no), Cook (no), Margel (no) |
+
+**No votes were added anywhere, and no motion changed its disposition, mover,
+second or count of motions.**
+
+`69513d40` is the 2025-02-11 defect from Part 1 §3b: four nomination-round
+votes swept onto an unrelated scheduling motion. Its legitimate roll survives —
+`2025-02-11:special#a1` still carries its 4 Yea votes (Tim Clark, Meghin
+Margel, Donald Cook, Andy Song) and is still `vote_format='named'`.
+
+`1479b410` is the 2025-12-10 board reorganization, and it was worse than the
+2025-02-11 case. Its rolls are printed **before** each `Final Resolution:` line,
+so the old parser handed every motion the *following* motion's roll — a
+systematic off-by-one. It also recorded a director named **`None`**, parsed
+from the line "Nay: None." That row asserted that a person called None voted
+against seating the Vice President.
+
+### Delta 2 — `vote_format='named'` −3 motions
+
+`2025-12-10:regular#a18`, `#a19` and `#a20` no longer have any votes attached,
+so they fall back to `carried_no_names`. This is a direct consequence of
+Delta 1 and affects no other year: 2025 named motions go 723 → 720, and the
+percentage unnamed for 2025 goes 17.3% → 17.6%. Every other year in
+`facts.votes_unnamed_by_year` is byte-identical, including 2018 at 130.
+
+The pre-2018 headline finding is untouched: still zero named votes anywhere in
+the record before 2018.
+
+## 2. R7 — the vote-roll bleed
+
+### 2a. The decided bound was necessary but not sufficient
+
+The decision was to bound the surname-only scan to the current motion's block,
+"never past the next `Motion & Voting` or `Recommended Action` heading,
+whichever comes first." I implemented that bound. **On its own it does not fix
+2025-02-11**, and I want to be explicit about that rather than report R7 as
+done-as-specified.
+
+In document `69513d40` the only `Motion & Voting` heading is at offset 303,
+*before* the `Final Resolution:` anchor at 782. `Recommended Action` does not
+appear at all. There is no later heading to stop at, so the bound falls through
+to end-of-document exactly as before, and all eight `ROLL CALL VOTING ROUND`
+blocks are still swept in.
+
+What actually ends the motion's roll is structural: a motion's canonical roll
+is the **contiguous run** of `Yea:`/`Nay:`/`Abstain:`/`Absent:` lines
+immediately following its resolution. In `69513d40` that run is one line long,
+and the prose sentence after it ("The process to select the new Director
+District 4 board position…") is where the motion's roll ends.
+
+So the implementation does both:
+
+1. **Bound the block** by the earliest of: the next `Final Resolution:` anchor,
+   the next "A motion was made", the next `Motion & Voting` heading, the next
+   `Recommended Action` heading. (The decided rule, plus the two pre-existing
+   bounds.)
+2. **Trim to the canonical roll** within that block —
+   `vote_parser._canonical_roll_block`. Blank lines are permitted inside a
+   roll; the first non-blank, non-roll line ends it. Before the first roll
+   line, up to 200 characters of interstitial text are tolerated (some items
+   print "Voting took place via roll call vote." between the resolution and its
+   roll), bounded so that a motion with no roll cannot reach forward into an
+   unrelated one.
+
+Step 2 is what does the work. Step 1 is retained because it is cheap, it is
+correct, and it stops the scan earlier in the common multi-motion case.
+
+### 2b. The regression test
+
+`TestNominationRollCallDoesNotBleed`, built on a faithful excerpt of
+`69513d40`. It uses only `parse_agenda_item`, which exists in both the old and
+new parser, so it fails on an **assertion**, not an import error. Verified by
+stashing the new `vote_parser.py` and running against `HEAD`:
+
+```
+FAILED test_only_the_canonical_roll_is_attributed_to_the_motion
+FAILED test_tally_cannot_exceed_a_four_member_board
+FAILED test_surname_only_nomination_names_are_not_recorded
+FAILED test_a_later_heading_bounds_the_block
+4 failed, 1 passed
+```
+
+with the defect's exact signature:
+
+```
+E       AssertionError: assert ((5) + (3)) == 4
+E       AssertionError: assert 'Song' not in ['Tim Clark', 'Meghin Margel',
+                                'Donald Cook', 'Andy Song', 'Song', 'Clark', ...]
+```
+
+All five pass on the new parser. `test_multi_motion_item_is_unaffected` pins
+the ordinary two-motion shape so the fix cannot quietly narrow normal parsing.
+
+The cap constant is imported *inside* its own test rather than at module scope,
+specifically so it cannot turn the above assertion failures into an
+`ImportError` when the file is run against the old parser.
+
+### 2c. New gap this fix exposes — not a regression, but a real hole
+
+`1479b410` (2025-12-10 board reorganization) now yields **no named votes at
+all** for its four officer elections. Previously it yielded eight, all
+misattributed by one motion. Wrong data became absent data, which is the right
+direction, but neither is correct.
+
+The cause is a format this parser has never handled: the rolls precede the
+`Final Resolution:` line, and they use **`Aye:`** — a label `ROLL_RX` does not
+recognise at all (it matches only `Yea|Nay|Abstain|Absent`). That is why the
+old parser captured the `Nay:` lines but never the `Aye:` lines, and why one
+row came through as a director named `None`.
+
+This is a genuine civic record — how each director voted on seating the 2026
+board president, vice president and legislative representative — and it is
+currently not in `facts.vote`. Filing as **R11** below rather than fixing it
+here: it is a new capability, not the bleed fix, and it would move the vote
+counts again.
+
+## 3. R8 — the locator quote cap
+
+Measured the motion-opening-to-`Final Resolution:` span across all 4,214
+agenda-item motions before choosing a cap:
+
+| Statistic | Chars |
+|---|---:|
+| Minimum | 122 |
+| Median | 152 |
+| 95th percentile | 233 |
+| 99th percentile | 420 |
+| **Maximum** | **3,518** |
+
+| Candidate cap | Motions still truncated |
+|---:|---:|
+| 400 (old) | 45 |
+| 1,000 | 30 |
+| 2,000 | 14 |
+| 3,000 | 3 |
+| **4,000** | **0** |
+
+**New cap: `MOTION_QUOTE_MAX_LEN = 4000`**, clearing the longest span in the
+corpus with headroom and matching the existing `motion_text[:4000]` ceiling.
+The median motion is 152 characters, so the overwhelming majority of quotes are
+unchanged — only 45 of 6,507 quotes now exceed 400 characters.
+
+**Longest quote in the corpus after the reload: 3,516 characters.** Two
+characters shorter than the 3,518-character span, because `make_quote`
+collapses whitespace runs after slicing.
+
+`disposition_and_locator` is now **PASS: 0 quote mismatches, 0 missing
+locators, 6,507 of 6,507 checked.** Nothing is left to enumerate — the 43 cases
+listed in §4c above are all resolved, and they were resolved by making the
+citation reach the disposition rather than by widening what counts as evidence.
+The `approve` stem is still excluded and still pinned by a test.
+
+## 4. Known-set shrunk to five
+
+With 2025-02-11 no longer discrepant, `facts.attendance_vote_discrepancies`
+holds **116 rows across 5 meetings** (was 117 across 6):
+
+| Meeting | Present | Max cast | Motions | Cause |
+|---|---:|---:|---:|---|
+| 2022-06-29 special | 1 | 4 | 4 | `presiding_only` |
+| 2022-10-05 special | 4 | 5 | 1 | `attendance_short` |
+| 2023-11-08 regular | 4 | 5 | 51 | `status_excluded` |
+| 2023-12-13 regular | 4 | 5 | 36 | `board_transition` |
+| 2024-07-10 special | 3 | 4 | 24 | `status_excluded` |
+
+`2025-02-11:special` and the `parser_roll_bleed` cause are removed from both
+`views.sql` and `KNOWN_ATTENDANCE_VOTE_DISCREPANCIES`. The remaining four cause
+values all describe the district's record; none describes our parsing.
+
+**The removal was not spotted by hand.** The `known_but_no_longer_present`
+field I added in Part 1 reported `['2025-02-11:special']` on the first post-
+reload run, which is exactly what it exists for — a known-set that silently
+retains entries becomes a list of bugs the check has been taught to ignore.
+
+Two tests enforce the shrink: `test_fixed_parser_defect_is_not_still_exempted`
+asserts 2025-02-11 is gone, and `test_the_fixed_meeting_would_now_be_reported_
+as_new` asserts that if the bleed ever regressed, that meeting would fail the
+check rather than be waved through. `test_every_cause_describes_the_record_not_
+the_parser` now rejects any cause outside the four record-level values, so a
+future parser defect cannot be parked in the known-set the way this one was.
+
+## 5. Export regenerated (R9)
+
+`reports/meeting-export-2026-02-04.md` regenerated and committed. The stale row
+is gone:
+
+```diff
+-## Work Study — `2026-02-04:work_study#2`
+-- Record source: **census**
+-- Minutes document: **none in corpus**
+-- BoardDocs meeting: `2026-02-04-special-meeting-work-session-500-pm`
+```
+
+The only other change is the restoration of trailing double-spaces (markdown
+hard line breaks) that the generator emits and the pre-commit
+trailing-whitespace hook strips again on commit. No motion, vote, attendance or
+locator value changed.
+
+## 6. Run report addendum (R10)
+
+`reports/facts-minutes-run-2026-09-13.md` now carries a dated
+**Addendum — 2026-09-14** appended to the end. The original body is untouched.
+It records: A1 the corrected six-meeting table, A2 that parser bug 3 was not
+fully fixed and what it cost, A3 that the 43-mismatch diagnosis was wrong, A4
+the figures superseded by the reload, A5 the stale export.
+
+## 7. Verification
+
+```
+pytest test_parsers.py -q          80 passed
+fixtures.py                        exit 0
+  exec_sessions_2024               PASS  (24 asserted, 2 reported)
+  attendance_vote_discrepancies    PASS  (116 rows, 5 meetings, 0 unknown, 0 stale)
+  disposition_and_locator          PASS  (0 of 6,507)
+  operator_hand_counts             BLOCKED (awaiting six counts)
+```
+
+One test needed updating beyond the known-set change:
+`test_known_and_unknown_are_separated` used 2025-02-11 as its example of a
+known meeting and was re-pointed at 2024-07-10.
+
+## 8. Recommended changes (requires operator approval — none made)
+
+- **R11 — Capture vote rolls printed *before* the `Final Resolution:` line, and
+  recognise `Aye:` as a yes label.** The 2025-12-10 board reorganization (§2c)
+  records how each director voted on seating the 2026 president, vice president
+  and legislative representative, and none of it is in `facts.vote`. `Aye:` is
+  not in `ROLL_RX` at all. Corpus-wide prevalence is unmeasured — I found this
+  document only because the bleed fix changed its output. **I'd suggest
+  measuring `Aye:` across the agenda-item corpus before designing the fix**,
+  since it may be a one-off format or may affect every reorganization meeting
+  in the record (these happen annually, every December).
+- **R12 — Sweep for other motions whose roll is the last thing in its document.**
+  The bleed was found via one meeting, not a search. The new
+  `_canonical_roll_block` bounds all of them structurally, but a count of how
+  many motions sit in that position would confirm the blast radius was really
+  two documents.
+
+R1–R6 from 2026-09-13 remain outstanding and untouched. R7, R8, R9 and R10 are
+now done.
+
+## 9. Compliance notes for Part 2
+
+- Writes were confined to schema `facts`: `build.py --reload` rewrote the six
+  fact tables, and `views.sql` was reapplied. No table outside `facts` was
+  written; no row outside `facts` was deleted.
+- All reads of `documents` used `db.query`, which opens the session
+  `READ ONLY`. The old-vs-new parser diff in §1 read `documents.content_text`
+  through that same read-only path.
+- `documents`, `chunks`, Qdrant, `rag_api`, `ksd-boarddocs-rag` and production
+  were never written. No hook was modified or bypassed.
+- No LLM is in any date, name, vote, motion or count path.
+- Credentials injected at runtime from the container; `.env` untouched; no
+  password printed.
+
+---
+
+## Appendix — Part 2 commands
+
+All prefixed by the same runtime credential injection shown in the Part 1
+appendix.
+
+```bash
+cd ~/workspace/projects/ksd-minutes/facts/minutes
+
+# Measure the motion-to-resolution span before choosing a cap (R8)
+.venv/bin/python -c "
+import re, db, statistics
+from vote_parser import FINAL_RES_RX, MADE_RX, MOTION_VOTING_RX
+rows = db.query('''SELECT id::text, content_text FROM documents
+                   WHERE document_type='agenda_item' AND content_text ~* 'motion *& *voting' ''')
+spans=[]
+for did, txt in rows:
+    if not MOTION_VOTING_RX.search(txt): continue
+    anchors=list(FINAL_RES_RX.finditer(txt)); made=[m.start() for m in MADE_RX.finditer(txt)]
+    for i,a in enumerate(anchors):
+        prev_end = anchors[i-1].end() if i else 0
+        cand=[p for p in made if prev_end<=p<a.start()]
+        spans.append(a.end()-(cand[-1] if cand else prev_end))
+spans.sort()
+print(spans[0], statistics.median(spans), spans[-1])
+for cap in (400,1000,2000,3000,4000): print(cap, sum(1 for s in spans if s>cap))
+"
+
+# Prove the regression test fails on the OLD parser with an assertion
+cp vote_parser.py /tmp/vote_parser.new.py
+git stash push -- vote_parser.py
+.venv/bin/python -m pytest test_parsers.py -k TestNominationRollCallDoesNotBleed -q
+git checkout -- vote_parser.py; git stash pop
+
+# Snapshot before the reload
+.venv/bin/python -c "
+import db, json
+snap={t: db.query('SELECT count(*) FROM facts.'+t)[0][0] for t in
+      ['meeting','attendance','motion','vote','executive_session','minutes_parse_log']}
+snap['max_quote_len']=db.query('SELECT max(length(locator_quote)) FROM facts.motion')[0][0]
+snap['vote_named_motions']=db.query(\"SELECT count(*) FROM facts.motion WHERE vote_format='named'\")[0][0]
+json.dump(snap, open('/tmp/before_reload.json','w'), indent=1)
+"
+
+# Rebuild (~73s)
+.venv/bin/python build.py --reload
+
+# Explain the vote delta: old vs new parser, side by side over every agenda item
+git show HEAD:facts/minutes/vote_parser.py > /tmp/vote_parser_old.py
+.venv/bin/python -c "
+import sys, importlib.util, db
+def load(name, path):
+    spec=importlib.util.spec_from_file_location(name,path); m=importlib.util.module_from_spec(spec)
+    sys.modules[name]=m; spec.loader.exec_module(m); return m
+old=load('vp_old','/tmp/vote_parser_old.py'); import vote_parser as new
+rows=db.query('''SELECT id::text, coalesce(agenda_item_id,''), content_text FROM documents
+                 WHERE document_type='agenda_item' AND content_text ~* 'motion *& *voting' ''')
+for did, aid, txt in rows:
+    o=old.parse_agenda_item(txt); n=new.parse_agenda_item(txt)
+    assert len(o)==len(n), ('motion count changed', did)
+    for om, nm in zip(o,n):
+        ov=[(v.director_raw,v.vote) for v in om.votes]; nv=[(v.director_raw,v.vote) for v in nm.votes]
+        if ov!=nv: print(did, aid, om.seq, 'REMOVED', [x for x in ov if x not in nv],
+                         'ADDED', [x for x in nv if x not in ov])
+"
+
+# Reapply views with the five-meeting known-set
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < views.sql
+
+# Verify
+.venv/bin/python -m pytest test_parsers.py -q      # 80 passed
+.venv/bin/python fixtures.py                       # exit 0
+
+# Regenerate the export and diff (R9)
+.venv/bin/python export_meeting.py 2026-02-04 -o ../../reports/meeting-export-2026-02-04.md
+cd ~/workspace/projects/ksd-minutes && git diff reports/meeting-export-2026-02-04.md
+```
+
+### Reproducing Part 2 from a clean checkout of this branch
+
+```bash
+cd ~/workspace/projects/ksd-minutes/facts/minutes
+export PGPASSWORD=$(podman inspect boarddocs-postgres \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^POSTGRES_PASSWORD=' | cut -d= -f2-)
+
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < schema.sql
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < views.sql
+
+.venv/bin/python build.py --reload                 # ~73s, vote = 19,613
+.venv/bin/python -m pytest test_parsers.py -q      # 80 passed
+.venv/bin/python fixtures.py                       # exit 0
+```

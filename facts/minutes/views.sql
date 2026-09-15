@@ -116,13 +116,14 @@ ORDER BY meeting_date, meeting_type;
 --   status_excluded   -- a director marked absent/excused in the roll is
 --                        nonetheless recorded voting, so the "present" count
 --                        legitimately falls below the number of voters.
---   parser_roll_bleed -- NOT a record discrepancy: a surname-only vote roll
---                        belonging to an adjacent motion was attributed to
---                        this one, inflating the tally. This is a live parser
---                        defect, retained here so it stays visible rather
---                        than being absorbed as a record quirk.
 --   NULL              -- a case not in the known-set. A NULL cause is a new
 --                        discrepancy and fails the hard fixture.
+--
+-- Every cause above describes the DISTRICT'S record, not our parsing of it. A
+-- sixth entry, 2025-02-11, was briefly carried as `parser_roll_bleed` while a
+-- nomination roll-call sequence was being attributed to the preceding motion
+-- (8 votes from a 4-member board). That was our bug, not theirs; it was fixed
+-- in vote_parser._canonical_roll_block and the meeting left this view.
 CREATE OR REPLACE VIEW facts.attendance_vote_discrepancies AS
 WITH present AS (
     SELECT meeting_id, count(*) AS n
@@ -135,8 +136,7 @@ known (meeting_id, cause) AS (
            ('2022-10-05:special', 'attendance_short'),
            ('2023-11-08:regular', 'status_excluded'),
            ('2023-12-13:regular', 'board_transition'),
-           ('2024-07-10:special', 'status_excluded'),
-           ('2025-02-11:special', 'parser_roll_bleed')
+           ('2024-07-10:special', 'status_excluded')
 )
 SELECT m.meeting_date,
        m.meeting_type,

@@ -22,12 +22,3 @@
   <sub>doc 9bb53a05 p.1 @738</sub>
 
 _No motions or executive sessions recorded for this meeting. For work and study sessions this is normal, not a parse failure._
-
-## Work Study — `2026-02-04:work_study#2`
-
-- Format era: **B**
-- Record source: **census**
-- Minutes document: **none in corpus**
-- BoardDocs meeting: `2026-02-04-special-meeting-work-session-500-pm`
-
-_No motions or executive sessions recorded for this meeting. For work and study sessions this is normal, not a parse failure._

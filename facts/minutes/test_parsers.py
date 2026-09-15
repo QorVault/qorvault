@@ -386,11 +386,16 @@ class TestKnownAttendanceVoteDiscrepancies:
         rows = [
             ("2022-06-29:special", "2022-06-29:special#a1", 1, 4, "presiding_only"),
             ("2030-01-01:regular", "2030-01-01:regular#a1", 2, 5, None),
-            ("2025-02-11:special", "2025-02-11:special#a1", 4, 8, "parser_roll_bleed"),
+            ("2024-07-10:special", "2024-07-10:special#a1", 3, 4, "status_excluded"),
         ]
         assert [u["meeting_id"] for u in unknown_attendance_vote_discrepancies(rows)] == ["2030-01-01:regular"]
 
-    def test_known_set_covers_exactly_the_six_diagnosed_meetings(self):
+    def test_the_fixed_meeting_would_now_be_reported_as_new(self):
+        """If the roll bleed regressed, 2025-02-11 would fail the check again."""
+        rows = [("2025-02-11:special", "2025-02-11:special#a1", 4, 8, None)]
+        assert [u["meeting_id"] for u in unknown_attendance_vote_discrepancies(rows)] == ["2025-02-11:special"]
+
+    def test_known_set_covers_exactly_the_five_diagnosed_meetings(self):
         """The known-set is a closed list; growing it is a deliberate act."""
         assert set(KNOWN_ATTENDANCE_VOTE_DISCREPANCIES) == {
             "2022-06-29:special",
@@ -398,8 +403,16 @@ class TestKnownAttendanceVoteDiscrepancies:
             "2023-11-08:regular",
             "2023-12-13:regular",
             "2024-07-10:special",
-            "2025-02-11:special",
         }
+
+    def test_fixed_parser_defect_is_not_still_exempted(self):
+        """2025-02-11 was our bug, not the district's; it must not linger.
+
+        Leaving it in the known-set after the parser fix would exempt a
+        meeting that no longer needs exempting -- and would silently re-accept
+        the defect if it ever regressed.
+        """
+        assert "2025-02-11:special" not in KNOWN_ATTENDANCE_VOTE_DISCREPANCIES
 
     def test_every_known_meeting_carries_a_cause(self):
         """A known meeting with no cause would be an unexplained exemption."""
@@ -407,9 +420,11 @@ class TestKnownAttendanceVoteDiscrepancies:
             assert cause, f"{meeting_id} has no cause"
             assert meeting_id.startswith(meeting_date), f"{meeting_id} date mismatch"
 
-    def test_parser_defect_is_not_labelled_a_record_discrepancy(self):
-        """2025-02-11 is a parser bug and must stay visible as one."""
-        assert KNOWN_ATTENDANCE_VOTE_DISCREPANCIES["2025-02-11:special"][1] == "parser_roll_bleed"
+    def test_every_cause_describes_the_record_not_the_parser(self):
+        """The known-set exempts record discrepancies, never our own defects."""
+        allowed = {"board_transition", "attendance_short", "presiding_only", "status_excluded"}
+        for meeting_id, (_date, cause) in KNOWN_ATTENDANCE_VOTE_DISCREPANCIES.items():
+            assert cause in allowed, f"{meeting_id}: {cause} is not a record-level cause"
 
 
 class TestHandCountFile:
@@ -471,3 +486,121 @@ class TestHandCountFile:
         assert got[0]["page_count"] == 5
         assert got[0]["motions_total"] is None
         assert got[1]["motions_total"] == 13
+
+
+# Faithful excerpt of agenda item 69513d40-ae2b-48a2-98e3-a9b72a6cab20,
+# "Director District No. 4 Finalist - Discussion, Roll Call Vote, and
+# Appointment", from the 2025-02-11 special meeting. One motion, followed by
+# nomination roll-call rounds that are NOT votes on that motion.
+NOMINATION_ROLL_CALL_ITEM = """Agenda Item Details
+Motion & Voting
+View All Motions
+The board completed their interviews earlier than anticipated prior to the
+executive session scheduled at 9:25 p.m.
+A motion was made to approve the aforementioned schedule.
+Motion by Tim Clark, second by Donald Cook.
+Final Resolution: Motion Carries
+Yea: Tim Clark, Meghin Margel, Donald Cook, Andy Song
+The process to select the new Director District 4 board position from the
+interview finalists took place via nominations and roll call voting as follows:
+Nominees: Teresa Gregory, Thomas Foege, David Stanford
+ROLL CALL VOTING ROUND 1
+Nominated Finalist #1 Teresa Gregory
+Yea: Song
+Nay: Clark, Cook, Margel
+Nomination Fails
+Nominated Finalist #2 Thomas Foege
+Yea: Clark
+Nay: Song, Cook, Margel
+Nomination Fails
+ROLL CALL VOTING ROUND 2
+Nominated Finalist #1 Teresa Gregory
+Yea: Song, Clark
+Nay: Cook, Margel
+Nomination Fails
+"""
+
+
+class TestNominationRollCallDoesNotBleed:
+    """A nomination roll-call sequence is not a vote on the preceding motion.
+
+    Regression test for the 2025-02-11 special meeting, which recorded 8 votes
+    from a 4-member board. The motion has one ``Final Resolution:`` anchor and
+    nothing after it to stop at, so the tail scan ran to end-of-document and
+    swept in every nomination round.
+    """
+
+    def test_only_the_canonical_roll_is_attributed_to_the_motion(self):
+        """The motion gets its own 4 votes, not the nomination rounds."""
+        motions = parse_agenda_item(NOMINATION_ROLL_CALL_ITEM)
+        assert len(motions) == 1
+        motion = motions[0]
+        assert [v.director_raw for v in motion.votes] == [
+            "Tim Clark",
+            "Meghin Margel",
+            "Donald Cook",
+            "Andy Song",
+        ]
+
+    def test_tally_cannot_exceed_a_four_member_board(self):
+        """The defect's signature: 5 yes + 3 no = 8 votes from 4 directors."""
+        motion = parse_agenda_item(NOMINATION_ROLL_CALL_ITEM)[0]
+        cast = (motion.tally_yes or 0) + (motion.tally_no or 0) + (motion.tally_abstain or 0)
+        assert cast == 4, f"expected 4 votes, got {cast} (roll bleed)"
+        assert motion.tally_yes == 4
+        assert motion.tally_no == 0
+
+    def test_surname_only_nomination_names_are_not_recorded(self):
+        """'Song' from a nomination round must not join 'Andy Song'."""
+        motion = parse_agenda_item(NOMINATION_ROLL_CALL_ITEM)[0]
+        names = [v.director_raw for v in motion.votes]
+        assert "Song" not in names
+        assert "Clark" not in names
+        assert "Margel" not in names
+        assert len(names) == len(set(names))
+
+    def test_a_later_heading_bounds_the_block(self):
+        """A following Motion & Voting / Recommended Action ends the block."""
+        text = NOMINATION_ROLL_CALL_ITEM.replace("The process to select", "Recommended Action\nThe process to select")
+        motion = parse_agenda_item(text)[0]
+        assert (motion.tally_yes or 0) + (motion.tally_no or 0) == 4
+
+    def test_multi_motion_item_is_unaffected(self):
+        """The ordinary two-motion shape still parses exactly as before."""
+        motions = parse_agenda_item(AGENDA_ITEM)
+        assert len(motions) == 2
+        assert motions[0].tally_yes == 5
+        assert motions[0].tally_no == 0
+        assert motions[1].tally_yes == 1
+        assert motions[1].tally_no == 3
+        assert motions[1].tally_abstain == 1
+
+
+class TestAgendaMotionQuoteReachesDisposition:
+    """The locator quote must contain the disposition it claims."""
+
+    def test_quote_reaches_final_resolution(self):
+        """A short motion's quote spans opening to resolution."""
+        motion = parse_agenda_item(AGENDA_ITEM)[0]
+        assert "Final Resolution: Motion Carries" in motion.quote
+
+    def test_long_motion_quote_still_reaches_disposition(self):
+        """A consent motion longer than the old 400-char cap still reaches it."""
+        filler = "and the item " * 200
+        text = AGENDA_ITEM.replace(
+            "Resolution No. 1697 - District Budget Adoption.",
+            "Resolution No. 1697 " + filler + " District Budget Adoption.",
+        )
+        motion = parse_agenda_item(text)[0]
+        assert len(motion.quote) > 400
+        assert "Final Resolution: Motion Carries" in motion.quote
+
+    def test_cap_clears_the_longest_span_in_the_corpus(self):
+        """The cap is set above the longest measured motion-to-resolution span."""
+        # Imported here, not at module scope: the roll-bleed regression tests
+        # above must fail on the OLD parser with an assertion, and a top-level
+        # import of a constant the old parser lacks would mask that with an
+        # ImportError instead.
+        from vote_parser import MOTION_QUOTE_MAX_LEN
+
+        assert MOTION_QUOTE_MAX_LEN >= 3518

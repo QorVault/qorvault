@@ -49,16 +49,22 @@ DISPOSITION_WORDS = {
 # cause vocabulary. A discrepancy OUTSIDE this set is a new finding and fails
 # the hard fixture.
 #
-# `parser_roll_bleed` is deliberately NOT described as a record discrepancy:
-# 2025-02-11 is a live parser defect and is carried here so it stays visible
-# rather than being absorbed into the accepted set. See the fixtures report.
+# Every entry here is a discrepancy in the DISTRICT'S OWN RECORD, not in our
+# parsing of it. That distinction is the point of the set: a parser defect
+# parked here would be a bug the check has been taught to ignore.
+#
+# 2025-02-11 was a sixth entry, carried as `parser_roll_bleed`. It was never a
+# record discrepancy -- a nomination roll-call sequence was being attributed to
+# the preceding motion, recording 8 votes from a 4-member board. The parser was
+# fixed (see vote_parser._canonical_roll_block) and the meeting left the view
+# on the next reload, so it is removed here rather than left to rot. The
+# fixture's `known_but_no_longer_present` output is what surfaced it.
 KNOWN_ATTENDANCE_VOTE_DISCREPANCIES = {
     "2022-06-29:special": ("2022-06-29", "presiding_only"),
     "2022-10-05:special": ("2022-10-05", "attendance_short"),
     "2023-11-08:regular": ("2023-11-08", "status_excluded"),
     "2023-12-13:regular": ("2023-12-13", "board_transition"),
     "2024-07-10:special": ("2024-07-10", "status_excluded"),
-    "2025-02-11:special": ("2025-02-11", "parser_roll_bleed"),
 }
 
 HAND_COUNTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "hand_counts.yaml")

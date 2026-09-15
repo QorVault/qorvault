@@ -234,3 +234,144 @@ python3 -m venv .venv
 ```
 
 Every command run this session is in the report's appendix.
+
+---
+
+# Part 2 — R7 and R8 applied (same session, same branch)
+
+Operator approved R7 and R8 with a reload, export regeneration and a dated
+addendum to the run report. **All four hard fixtures are now green or
+legitimately blocked; `fixtures.py` exits 0 for the first time.** Tests 70 → 80.
+
+## Decisions (Part 2)
+
+**The decided bound for R7 was necessary but not sufficient, so I implemented
+both it and the rule that actually works.** Bounding the scan at the next
+`Motion & Voting` / `Recommended Action` heading does not fix 2025-02-11: that
+document's only such heading sits *before* the resolution, so the bound still
+falls through to end-of-document. What ends a motion's roll is structural — the
+contiguous run of `Yea:`/`Nay:`/`Abstain:`/`Absent:` lines immediately after
+its resolution. `_canonical_roll_block` implements that; the heading bound is
+retained as a cheap earlier stop.
+
+**The quote cap was chosen from measurement, not judgement.** The longest
+motion-to-resolution span in the corpus is 3,518 characters; the median is 152.
+`MOTION_QUOTE_MAX_LEN = 4000` clears the longest with headroom and matches the
+existing `motion_text` ceiling. Only 45 of 6,507 quotes now exceed 400
+characters.
+
+**The known-set shrank to five and the `parser_roll_bleed` cause was retired.**
+Every remaining cause describes the district's record. A test now rejects any
+cause outside those four, so a future parser defect cannot be parked there the
+way this one was.
+
+## What changed (Part 2)
+
+| File | Change |
+|---|---|
+| `facts/minutes/vote_parser.py` | `_canonical_roll_block`, heading bounds, `MOTION_QUOTE_MAX_LEN = 4000`. |
+| `facts/minutes/fixtures.py` | Known-set 6 → 5; 2025-02-11 and `parser_roll_bleed` removed with reasoning. |
+| `facts/minutes/views.sql` | Same removal in the view's `known` CTE and cause vocabulary. |
+| `facts/minutes/test_parsers.py` | +10 tests; 2 updated off 2025-02-11. |
+| `reports/meeting-export-2026-02-04.md` | Regenerated — stale meeting row gone. |
+| `reports/facts-minutes-run-2026-09-13.md` | Dated addendum appended; body untouched. |
+| `reports/facts-minutes-fixtures-2026-09-14.md` | Part 2 and its command appendix. |
+
+Database: `build.py --reload` (1m12s) plus a views reapply. Two deltas, both
+explained: `facts.vote` 19,625 → **19,613** (−12) and `vote_format='named'`
+motions 4,213 → **4,210** (−3). Every other table, source split, disposition
+split and parse status is unchanged.
+
+## Findings (Part 2)
+
+**All 12 removed vote rows were spurious — verified by diffing the old and new
+parsers over all 2,543 agenda items, not by inference.** Only two documents
+differ. No votes were added; no motion changed disposition, mover, second, or
+the count of motions.
+
+**The 2025-12-10 board reorganization was worse than 2025-02-11.** Its rolls
+are printed *before* each `Final Resolution:` line, so the old parser gave
+every motion the following motion's roll — a systematic off-by-one — and
+recorded a director named **`None`**, parsed from "Nay: None." That row asserted
+a person called None voted against seating the Vice President.
+
+**Fixing the bleed exposed a real hole: those officer elections now have no
+named votes at all.** Wrong data became absent data, which is the right
+direction, but neither is correct. The format uses `Aye:`, which `ROLL_RX` does
+not recognise at all — that is why the old parser caught the `Nay:` lines and
+never the `Aye:` lines. Filed as R11. These are annual December meetings, so
+this may affect every reorganization in the record; prevalence is unmeasured.
+
+**The stale-entry check earned its keep immediately.** `known_but_no_longer_
+present` reported `['2025-02-11:special']` on the first post-reload run. A
+known-set that silently retains entries becomes a list of bugs the check has
+been taught to ignore.
+
+**The regression test fails on the old parser with an assertion, as required** —
+verified by stashing the new parser and running against `HEAD`: 4 failures with
+`assert ((5) + (3)) == 4` and the bled surname list. The cap constant is
+imported inside its own test so it cannot turn those into an `ImportError`.
+
+## Open Items (Part 2)
+
+### 1. Pre-resolution `Aye:` rolls are not captured — R11
+
+- **Symptom:** `2025-12-10:regular#a18/#a19/#a20` have no named votes. Four
+  officer elections for the 2026 board are absent from `facts.vote`.
+- **Diagnosis:** Rolls precede the `Final Resolution:` line, and `Aye:` is not
+  in `ROLL_RX`.
+- **Next step:** Measure `Aye:` prevalence across the agenda-item corpus first,
+  then decide whether this is a one-off or an annual pattern before designing
+  the fix.
+- **Urgency:** Medium. It is a small number of rows but a civically
+  significant one — who voted for which board officer.
+
+### 2. Blast radius of the bleed was never swept — R12
+
+- **Symptom:** The defect was found via one meeting, not a search.
+- **Next step:** Count motions whose roll is the last content in its document
+  to confirm only two documents were ever affected.
+- **Urgency:** Low. `_canonical_roll_block` bounds them all structurally now;
+  this is confirmation, not repair.
+
+### 3. Hand-count fixture still BLOCKED
+
+Unchanged from Part 1 and still the only independent check on parser accuracy.
+Six targets, paths and instructions are prepared in
+`facts/minutes/fixtures/hand_counts.yaml`. The parser figures in that file were
+regenerated as part of this reload and are unchanged — none of the six target
+meetings was affected by R7 or R8.
+
+### 4. Closed this session
+
+R7, R8, R9 (export regenerated) and R10 (run report addendum) are done.
+Part 1 open items 1 (`disposition_and_locator` at 43) and 2 (roll bleed) are
+closed. R1–R6 from 2026-09-13 remain outstanding and untouched.
+
+## System state summary (Part 2)
+
+- Schema `facts`: six tables reloaded, six views reapplied. `facts.vote` is the
+  only table whose row count changed. Nothing outside `facts` was written; no
+  row outside `facts` was deleted.
+- Branch `claude/facts-minutes-fixtures`, two commits ahead of `main` @
+  `27f80d2`. Not pushed, not merged. Pre-commit hooks ran and passed on both
+  commits; none bypassed.
+- `documents`, `chunks`, Qdrant, `rag_api`, `ksd-boarddocs-rag` and production:
+  never written. All corpus reads `READ ONLY`.
+- Credentials injected at runtime; `.env` untouched; no password printed.
+
+## Regenerating (Part 2)
+
+```bash
+cd ~/workspace/projects/ksd-minutes/facts/minutes
+export PGPASSWORD=$(podman inspect boarddocs-postgres \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep '^POSTGRES_PASSWORD=' | cut -d= -f2-)
+
+podman exec -i -e PGPASSWORD="$PGPASSWORD" boarddocs-postgres \
+  psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 < views.sql
+.venv/bin/python build.py --reload                 # ~73s -> vote = 19,613
+.venv/bin/python -m pytest test_parsers.py -q      # 80 passed
+.venv/bin/python fixtures.py                       # exit 0
+.venv/bin/python export_meeting.py 2026-02-04 -o ../../reports/meeting-export-2026-02-04.md
+```

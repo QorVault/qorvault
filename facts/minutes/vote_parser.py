@@ -49,6 +49,24 @@ MOVER_RX = re.compile(
 MOVER_ONLY_RX = re.compile(r"Motion\s+by\s+([^.,\n]{2,60}?)\s*\.", re.I)
 ROLL_RX = re.compile(r"^\s*(Yea|Nay|Abstain|Absent)\s*:\s*([^\n]+)$", re.M)
 CONSENT_RX = re.compile(r"consent\s+(agenda|calendar)", re.I)
+# A later block heading ends the current motion's block. "Recommended Action"
+# opens the next agenda item's narrative; "Motion & Voting" opens the next
+# voting block.
+RECOMMENDED_ACTION_RX = re.compile(r"Recommended\s+Action", re.I)
+# A line that is part of a vote roll: the label lines themselves, or a blank
+# line separating them. Anything else ends the roll.
+ROLL_LINE_RX = re.compile(r"^\s*(?:Yea|Nay|Abstain|Absent)\s*:", re.I)
+
+# Locator quote ceiling for an agenda-item motion.
+#
+# The quote must bridge the motion opening to its "Final Resolution:" line so
+# the citation resolves to text that actually shows the outcome. Measured over
+# all 4,214 agenda-item motions in the corpus, that span is 122 chars at
+# minimum, 152 at the median and 3,518 at the maximum. The previous 400-char
+# ceiling truncated 45 of them before the disposition ever appeared, which is
+# what made `disposition_and_locator` fail on 43 rows. 4,000 clears the longest
+# span in the corpus with headroom and matches the existing motion_text cap.
+MOTION_QUOTE_MAX_LEN = 4000
 
 DISPOSITION_MAP = {"carries": "adopted", "fails": "lost"}
 VOTE_MAP = {"yea": "yes", "nay": "no", "abstain": "abstain", "absent": "absent"}
@@ -108,6 +126,51 @@ def _split_names(blob: str) -> list[str]:
             continue
         out.append(name)
     return out
+
+
+def _canonical_roll_block(tail: str) -> str:
+    """Trim a motion's tail to the contiguous vote roll that belongs to it.
+
+    A motion's canonical roll is the run of ``Yea:``/``Nay:``/``Abstain:``/
+    ``Absent:`` lines immediately following its ``Final Resolution:`` line. The
+    first line that is neither a roll line nor blank ends it.
+
+    This is what stops a roll from bleeding across motions. The 2025-02-11
+    special meeting is the case that forced it: one ``Final Resolution:``
+    anchor, followed by prose and then eight ``ROLL CALL VOTING ROUND`` blocks
+    of *nomination* votes. Those rounds are not votes on the motion, but with
+    no later anchor and no later "A motion was made" to stop at, the scan ran
+    to the end of the document and swept them in -- recording 8 votes from a
+    4-member board.
+
+    Args:
+        tail: Document text starting immediately after the ``Final
+            Resolution:`` line and already bounded by the next block.
+
+    Returns:
+        The leading portion of ``tail`` holding only this motion's roll.
+    """
+    out: list[str] = []
+    seen_roll = False
+    for line in tail.splitlines(keepends=True):
+        if ROLL_LINE_RX.match(line):
+            seen_roll = True
+            out.append(line)
+            continue
+        if not line.strip():
+            # Blank lines are allowed inside a roll but never start one.
+            out.append(line)
+            continue
+        if seen_roll:
+            break
+        # Before the first roll line, allow the short interstitial that some
+        # items print between the resolution and its roll ("Voting took place
+        # via roll call vote."). Bounded, so an absent roll cannot reach
+        # forward into an unrelated one.
+        if sum(len(s) for s in out) > 200:
+            break
+        out.append(line)
+    return "".join(out) if seen_roll else ""
 
 
 def parse_agenda_item(text: str) -> list[AgendaMotion]:
@@ -182,8 +245,21 @@ def parse_agenda_item(text: str) -> list[AgendaMotion]:
         next_anchor = anchors[i + 1].start() if i + 1 < len(anchors) else len(text)
         tail_start = anchor.end()
         following = [p for p in made if p > tail_start]
-        next_start = min(following[0], next_anchor) if following else next_anchor
-        tail = text[tail_start:next_start]
+        bounds = [next_anchor]
+        if following:
+            bounds.append(following[0])
+        # A later block heading also ends this motion's block. Without this the
+        # bound falls back to end-of-document whenever a motion is the last one
+        # in its item.
+        for heading_rx in (MOTION_VOTING_RX, RECOMMENDED_ACTION_RX):
+            heading = heading_rx.search(text, tail_start)
+            if heading:
+                bounds.append(heading.start())
+        next_start = min(bounds)
+        # Bounding by the next block is necessary but not sufficient: a
+        # nomination roll-call sequence can sit inside this same block. Keep
+        # only the contiguous roll that follows the resolution.
+        tail = _canonical_roll_block(text[tail_start:next_start])
 
         votes: list[AgendaVote] = []
         counts = {"yes": 0, "no": 0, "abstain": 0}
@@ -217,8 +293,11 @@ def parse_agenda_item(text: str) -> list[AgendaMotion]:
                 is_consent_agenda=bool(CONSENT_RX.search(motion_text[:400])),
                 offset=start,
                 # Quote spans the motion through its disposition so the locator
-                # resolves to a page containing the disposition word.
-                quote=make_quote(text, start, anchor.end(), max_len=400),
+                # resolves to a page containing the disposition word. The cap
+                # clears the longest such span in the corpus -- a quote that
+                # stops short of the resolution cites the right document but
+                # proves nothing about the outcome.
+                quote=make_quote(text, start, anchor.end(), max_len=MOTION_QUOTE_MAX_LEN),
                 tally_yes=counts["yes"] if votes else None,
                 tally_no=counts["no"] if votes else None,
                 tally_abstain=counts["abstain"] if votes else None,

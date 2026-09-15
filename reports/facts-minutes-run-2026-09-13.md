@@ -380,3 +380,101 @@ SELECT * FROM facts.meetings_missing_minutes WHERE meeting_type = 'regular';
 SELECT director, vote, count(*) FROM facts.votes_by_director
  GROUP BY 1,2 ORDER BY 1,2;
 ```
+
+---
+
+# Addendum — 2026-09-14
+
+Appended, not edited: the body above is the record of the 2026-09-13 run and is
+left as it was written. This addendum corrects two enumerations in it and notes
+where its figures have since been superseded. Work done on branch
+`claude/facts-minutes-fixtures`; see
+`reports/facts-minutes-fixtures-2026-09-14.md`.
+
+## A1 — §4 `tally_within_attendance`: the table of six meetings is wrong
+
+The totals in §4 were right — 117 violating motions across 6 meetings — but two
+rows of the enumeration do not match the data.
+
+- **2020-03-19 special is listed and does not violate.** It produces no
+  discrepancy rows at all.
+- **2023-11-08 regular violates and is not listed.** It is the largest single
+  contributor: 51 of the 117 motions.
+
+The corrected six, as built on 2026-09-13:
+
+| Meeting | Present recorded | Max cast | Motions | Cause |
+|---|---:|---:|---:|---|
+| 2022-06-29 special | 1 | 4 | 4 | Minutes record only the presiding officer |
+| 2022-10-05 special | 4 | 5 | 1 | Attendance list short by one |
+| 2023-11-08 regular | 4 | 5 | 51 | Farah marked excused but recorded voting |
+| 2023-12-13 regular | 4 | 5 | 36 | Board transition — outgoing roll, incoming voters |
+| 2024-07-10 special | 3 | 4 | 24 | Clark excused, Song absent; Clark recorded voting |
+| 2025-02-11 special | 4 | 8 | 1 | **Not a record discrepancy — parser defect** |
+
+§4's causes for 2024-07-10 and 2025-02-11 ("Statuses include absent/excused, so
+'present' is 4" / "Same") do not describe 2025-02-11: that meeting records 4
+present and 4 directors, with no absent or excused status involved. Its 8-vote
+tally came from our parser, not from the district's record. See A2.
+
+## A2 — §5 parser bugs: bug 3 was not fully fixed
+
+§5 records the surname-only roll double-count as fixed. It was fixed for the
+shape described there (a pre-roll before the next resolution) but not for the
+case where a motion is the last one in its agenda item and is followed by a
+*nomination* roll-call sequence. With no later `Final Resolution:` anchor and no
+later "A motion was made" to stop at, the scan ran to end-of-document.
+
+Two documents were affected, and in both the votes recorded were wrong:
+
+- `69513d40` (2025-02-11 special) — 8 votes from a 4-member board; four
+  nomination-round votes attributed to an unrelated scheduling motion.
+- `1479b410` (2025-12-10, board reorganization) — each motion received the
+  *following* motion's roll, an off-by-one, and one row recorded a director
+  literally named `None` from the line "Nay: None."
+
+Fixed 2026-09-14 in `vote_parser._canonical_roll_block`. **12 vote rows were
+removed; all 12 were spurious.** See the 2026-09-14 report §2 for the
+row-by-row evidence.
+
+## A3 — §4 `disposition_and_locator`: the diagnosis was wrong
+
+§4 attributes the 43 residual mismatches to vocabulary — *"a motion marked
+`withdrawn` because the minutes say the mover 'withdrew' it"*. There is not one
+`withdrawn` or `tabled` row among the 43. All 43 are `agenda_item` motions
+(41 `adopted`, 2 `lost`) whose locator quote was truncated at 400 characters
+before reaching the `Final Resolution:` line.
+
+Widening the disposition vocabulary to word stems on 2026-09-14 changed the
+count by zero. Raising the quote cap to 4,000 characters took it to **0**.
+
+## A4 — Figures superseded by the 2026-09-14 reload
+
+| Figure in this report | 2026-09-13 | After 2026-09-14 reload |
+|---|---:|---:|
+| `facts.vote` rows (§1) | 19,625 | **19,613** |
+| Motions with `vote_format='named'` | 4,213 | **4,210** |
+| 2025 named motions (§3) | 723 | **720** |
+| 2025 `%` unnamed (§3) | 17.3% | **17.6%** |
+| Longest `facts.motion` locator quote | 400 | **3,516** |
+
+Every changed figure is in 2025 — both affected documents are 2025 meetings
+(2025-02-11 and 2025-12-10). All other years in §3 are unchanged, including
+2018 (130 named), and `facts.meeting` (1,646), `facts.attendance` (3,515),
+`facts.motion` (6,507), `facts.executive_session` (280) and
+`facts.minutes_parse_log` (874), along with all disposition and source splits.
+
+The three motions that lost `named` status are `2025-12-10:regular#a18`, `#a19`
+and `#a20` — the board-reorganization officer elections, whose rolls are
+printed *before* their `Final Resolution:` line and so are no longer captured
+at all. That is a known gap, not a silent loss; see the 2026-09-14 report §2c.
+
+The §3 headline finding is untouched: no named votes exist anywhere in the
+record before 2018.
+
+## A5 — §6 export is superseded
+
+`reports/meeting-export-2026-02-04.md` as committed on 2026-09-13 showed a
+meeting row `2026-02-04:work_study#2` that does not exist in the database — a
+duplicate punctuated slug (R6) deduped by the census after that export was
+generated. Regenerated 2026-09-14.

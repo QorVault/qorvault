@@ -295,11 +295,17 @@ reason codes — is done and evidenced.
 
 ## The history rewrite — commands, unexecuted
 
-**Scope.** Eight commits after this session's commit; `29557ed` is the merge
-base with `main` and nothing before it is touched. Five commits carry
-`facts/vouchers/samples` and `exports` in their tree — 24 files each and 38
-at `7659f6d`. The commit made this session adds none, which is why the
-parking step from the previous plan is gone.
+**Scope.** Eight commits, `29557ed` is the merge base with `main`, and
+nothing before it is touched. **Six of the eight carry
+`facts/vouchers/samples` and `exports` in their tree** — 24 files each on
+the four oldest, 38 at `7659f6d` and 38 at this session's commit `1f0db30`.
+
+That last one is worth being exact about, because the diff and the tree
+say different things. `1f0db30` **adds** no artifact file — `git show
+--stat` lists none — but it **inherits** all 38 from its parent, because a
+commit that does not delete a path still carries it. The rewrite therefore
+has to cover this commit too, which is why the range below ends at the
+branch tip and not at `7659f6d`.
 
 **Facts, re-verified this session, all unchanged:**
 
@@ -326,10 +332,25 @@ PRE=$(git rev-parse claude/facts-vouchers)
 echo "pre-rewrite tip: $PRE"          # WRITE THIS DOWN
 git tag pre-redaction-2026-09-16 claude/facts-vouchers
 
-# 1. The working tree must be clean of anything you do not want swept up.
-#    The regenerated artifacts are still sitting here uncommitted, and the
-#    rewrite resets the working tree.
-git status --short
+# 1. The working tree MUST be clean. filter-branch refuses to run with
+#    unstaged changes, and this tree has 38 modified artifact files plus 4
+#    new ones sitting uncommitted. They are cheap to reproduce -- one run of
+#    samples.py and five of export_cycle.py -- and they have to be
+#    regenerated after C3 is ruled on anyway, so discard them rather than
+#    parking them.
+git status --short                      # expect the artifacts, nothing else
+git checkout -- facts/vouchers/samples exports
+
+#    The four new sample files are untracked, so checkout does not touch
+#    them. Move them aside; the rewrite is about to remove the whole
+#    samples path from the tree.
+mkdir -p ~/redaction-scratch
+mv facts/vouchers/samples/2026-01-14-ACH.md \
+   facts/vouchers/samples/2026-01-14-ASB.md \
+   facts/vouchers/samples/2026-01-14-GF.md \
+   facts/vouchers/samples/2026-02-11-GF.md ~/redaction-scratch/
+
+git status --short                      # must now print NOTHING
 
 # 2. Remove both paths from every commit on this branch.
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --index-filter \

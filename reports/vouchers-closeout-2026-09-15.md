@@ -226,13 +226,13 @@ and that payee is exactly who this control exists to protect.
 Running the classifier over all 13,291 payees before trusting it caught two
 things a unit test would not have:
 
-**`(individual payee, name withheld)` was published.** "Church" is a marker on the
+**A payee in `Surname, Given` form whose surname is a marker word was published.** "Church" is a marker on the
 operator's own list and it is also this person's surname. The fix is the
 `Surname, Given` guard, which `is_person_shaped` already computes correctly —
 it distinguishes a given name after the comma from a legal form, which is
 why `NWAP, Inc` and `Smith, LLC` survive it. Regression test pinned.
 
-**`(individual payee, name withheld)` and `(individual payee, name withheld)` were published.** Same word, no comma, so
+**Two more payees with that surname, in `Given Surname` form, were published.** Same word, no comma, so
 the person-shape guard cannot see them. `SURNAME_LIKE_MARKERS` now holds
 exactly one entry — `church` — and a surname-like marker only counts on a
 name of three or more tokens. `Faith Baptist Church` and `Seattle Buddhist
@@ -465,8 +465,7 @@ signature of an under-parse. The docstring says this at the point of use so
 the next person does not add the symmetric case for tidiness.
 
 **C2 — a marker word can be a surname, and the first corpus run published
-three people because of it.** `(individual payee, name withheld)`, `(individual payee, name withheld)`, `Gene
-Church`. Both holes are closed and pinned by tests. The general lesson is
+three people because of it.** the three payees whose surname is a marker word. Both holes are closed and pinned by tests. The general lesson is
 that the classifier had to be run over all 13,291 payees *before* being
 trusted; the unit tests I wrote first were all green while it was still
 publishing three people.
@@ -474,7 +473,7 @@ publishing three people.
 **C3 — descriptions leak surnames that the payee column withholds.** The
 override that catches F4 works because the description says
 `Payroll Handwrite - Kelly`. That string stays in the sample and export while
-`(individual payee, name withheld)` is withheld from the payee column. The full name is not
+the payee is withheld from the payee column. The full name is not
 published, so the letter of the rule holds; a surname beside an amount is
 still more than the rule intends to release. Out of scope here and raised
 below.

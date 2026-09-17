@@ -384,10 +384,47 @@ PERIOD_RX = re.compile(
     r"(?P<d1>\d{1,2}/\d{1,2}/\d{2,4})\s*(?:through|to|-)\s*(?P<d2>\d{1,2}/\d{1,2}/\d{2,4})",
     re.I,
 )
+# A period is a statement the document makes in its own header. It is NOT
+# whatever date range happens to appear first on page 1.
+#
+# The 2025-08-13 GF listing prints no period at all, and this regex matched
+# "07/01/25-06/30/25" inside the first line item's description -- "Software
+# License Renewal 07/01/25-06/30/25" -- giving that set a period ending ten
+# months before it began. A vendor's contract dates are a fact about the
+# vendor's invoice, not about the warrant run, and nothing but position on
+# the page distinguishes them.
+#
+# So the search is confined to the header region: page 1 down to, but not
+# including, the first line that carries two or more printed amounts. Two
+# amounts is what makes a line a data row in every era here -- the check
+# amount and the invoice amount -- and no title, fund name or period
+# statement in this corpus carries them.
 PCARD_RX = re.compile(
     r"P-?Cards?\s+(?P<d1>\d{1,2}/\d{1,2}/\d{2,4})\s*(?:through|to|-)\s*" r"(?P<d2>\d{1,2}/\d{1,2}/\d{2,4})",
     re.I,
 )
+
+
+def header_region(first_page: str) -> str:
+    """Return page 1's text above the first data row.
+
+    A data row is a line carrying two or more printed amounts -- the check
+    amount and the invoice amount. Everything above the first such line is
+    the document's own header: its title, its fund, and any period it
+    states. See the comment on :data:`PERIOD_RX` for the set this exists to
+    fix.
+
+    Args:
+        first_page: Text of page 1.
+
+    Returns:
+        The header region, or the whole page when it holds no data row.
+    """
+    lines = first_page.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if len(HAS_AMOUNT_RX.findall(line)) >= 2:
+            return "".join(lines[:index])
+    return first_page
 
 
 def detect_era(first_page: str, meeting_date: str | None = None) -> str | None:
@@ -579,8 +616,9 @@ def _read_totals(result: ParsedListing, text: str, first_page: str, last_row_end
     if result.stated_total_offset is not None:
         result.extra_totals = [t for t in result.totals if t[2] > result.stated_total_offset]
 
-    period = PERIOD_RX.search(first_page)
-    pcard = PCARD_RX.search(first_page)
+    header = header_region(first_page)
+    period = PERIOD_RX.search(header)
+    pcard = PCARD_RX.search(header)
     if period and pcard and period.start() >= pcard.start():
         period = None
     if period:

@@ -26,6 +26,17 @@ which is the operator's to rule on, so the artifacts were not committed.
 
 **Readiness: NOT READY for fast-forward.** See the readiness line below.
 
+**Update, later the same day.** The operator ruled on all four open
+questions and the rulings are implemented in a second commit. What changed:
+descriptions and quotes are masked, the leak check **passes**, the fixture
+names are hashes, the period invariant exists with its two reason codes and
+a parser that no longer reads a period out of a line item, and the transport
+is documented and hardened. **386 tests pass, 0 fail, 0 skip.** The
+artifacts are still not committed, per the ruling. Full detail is in
+`reports/vouchers-closeout-2026-09-16.md` under "Rulings implemented"; the
+sections below are the state that produced the rulings and the operator
+sequence, which is unchanged except where marked.
+
 ## Decisions
 
 1. **A credential-free, read-only database transport, opt-in, in `db.py`.**
@@ -71,14 +82,19 @@ which is the operator's to rule on, so the artifacts were not committed.
    fail in is "an organization stays withheld", not "an employee is
    published". Pinned by a test, and raised for you to overrule.
 
-4. **`test_no_leaks.py` was not modified.** Three of its four failure causes
+4. **`test_no_leaks.py` was not modified.** *(Superseded by the rulings —
+   all three patches are now applied. See the rulings section below.)*
+   Three of its four failure causes
    are defects in the test rather than leaks, and I am confident of the
    diagnosis — but changing what a HARD privacy test accepts carries the
    same evidence burden as changing the classifier, and that is the
    operator's decision. The exact patch for each is in the report under
    Recommended changes.
 
-5. **The regenerated artifacts were not committed.** They are strictly
+5. **The regenerated artifacts were not committed.** *(Still true after the
+   rulings, but for a different reason: they are now clean, and the operator
+   instructed that they be held until the allowlist is populated.)*
+   They are strictly
    better than what is at `HEAD` — which names hundreds of individuals in
    the payee column itself — but "better" is not the standard for a privacy
    control, and one person's name in a committed file cannot be taken back.
@@ -257,8 +273,25 @@ payees first, and put the organizations you want published into
 `BANK OF AMERICA` at 59,042 lines, `Amazon.Com` at 23,574 and `KCDA` at
 12,578 — are the cost of the specified rule in one screen.
 
-**4. Rule on C3 and fix the leak test** (Open items 1 and 2). Nothing below
-this line can go green until both are done.
+**4. ~~Rule on C3 and fix the leak test.~~ DONE — both are built and the
+leak check passes.** Replaced by: **re-run `build.py --reload`**, which needs
+the credential from `ksd-main/.env`. The period fix is in the code and not in
+the tables, and `fixtures.py` reports 1 FAIL until it runs:
+
+```bash
+cd ~/workspace/projects/ksd-vouchers/facts/vouchers
+# credential in the environment; the reload writes
+podman exec -i boarddocs-postgres psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 -f - < schema.sql
+.venv/bin/python build.py --reload --progress
+VOUCHERS_DB_TRANSPORT=podman .venv/bin/python fixtures.py   # expect 38 PASS / 0 FAIL
+```
+
+`schema.sql` must be applied first — it carries the two new reason codes, and
+the reload writes rows that the old CHECK constraint would reject. Both the
+schema file and the reload are idempotent. Expect exactly 12 sets to gain a
+period reason code and **no dollar figure, line count or reconciliation
+status to move**; that is already verified by dry run and the comparison is
+in the report.
 
 **5. Regenerate and commit the artifacts.**
 
@@ -271,6 +304,7 @@ for d in 2026-03-25 2026-05-27 2026-06-24 2026-07-22 2026-08-26; do
   .venv/bin/python export_cycle.py "$d"    # POSITIONAL. --date does not exist.
 done
 .venv/bin/python -m pytest -q -rs          # must be 0 failed and 0 skipped
+                                           # 386 tests as of 2026-09-16
 cd ~/workspace/projects/ksd-vouchers
 git add facts/vouchers/samples exports
 git commit -S -m "feat: publish 2026 voucher samples and cycle exports with payee withholding"
@@ -284,11 +318,25 @@ git commit -S -m "feat: publish 2026 voucher samples and cycle exports with paye
 is true today:
 
 1. **The history rewrite has been run and verified.** 460 distinct withheld
-   payee names are in the current history across 35 tracked files in five
-   commits. This is unchanged from 2026-09-15 and is the blocking condition.
+   payee names are in the current history across 35 tracked files. This is
+   unchanged from 2026-09-15 and is the blocking condition.
 2. **The allowlist has been populated and the artifacts regenerated against
-   it**, with `test_no_leaks.py` passing rather than failing or skipping.
-   That in turn needs C3 ruled on and the three test defects fixed.
+   it**, then committed.
+
+What the rulings did change is *why* item 2 is outstanding. It is no longer
+blocked on a defect: C3 is ruled on and built, the three leak-test defects
+are fixed, `test_no_leaks.py` **passes** on the regenerated artifacts, and
+the search of every tracked file finds **no individual's name anywhere in
+the voucher package or its documents**. What remains is a decision — which
+organisations to publish — and 45 candidates are listed in the report. The
+artifacts are held out of the commit on the operator's explicit instruction,
+not because anything is wrong with them.
+
+One more thing must happen before the branch is fit to merge, and it is new:
+**`build.py --reload` has to run again.** The period work is in the code and
+not in the tables, and the new `contract_period_invariant` fixture check
+fails until it does — truthfully, because the database still holds the
+pre-ruling build.
 
 Everything else — the rebuild, the STOP check, the HARD fixtures, the
 reason codes — is done and evidenced.
@@ -531,6 +579,79 @@ line in the refresh plan.
   operator's rebuild logs plus this session's `fixtures_2026-09-16.txt`,
   `leak_triage.py`, `leak_triage2.py` and their JSON output. The triage
   JSON contains payee names and stays out of git with the rest of `_build`.
+
+## Rulings of 2026-09-16 — decisions and what changed
+
+The operator's rulings arrived after the first commit. Five decisions were
+mine to make inside them, and each is here because it could reasonably have
+gone the other way.
+
+7. **One object, not one function, does the masking and the checking.**
+   `WithheldNameIndex` is constructed by `samples.py`, `export_cycle.py` and
+   `test_no_leaks.py`, each from its **own** view of who is published —
+   samples without the watch list, exports with it, matching what each
+   already does in its payee column. Finding D2 was that a shared *function*
+   did not prevent drift because the callers passed different arguments; a
+   shared object that carries the decision is the fix.
+
+8. **The length cut-off became a token rule, and this one matters.** The old
+   test ignored withheld names of six characters or fewer, because without
+   anchoring a short name matches inside ordinary words. Carrying that over
+   would have excluded 23 real people from the control — two short tokens
+   each, the shape common in Vietnamese, Chinese and Korean names — while
+   protecting nobody, since all 107 single-token short names are acronyms.
+   The rule is now two-or-more tokens **or** seven-plus characters. A flat
+   length cut-off fails hardest on the payees with the shortest names, and
+   that is not a neutral way for a privacy control to fail.
+
+9. **An invalid period keeps its dates.** `PERIOD_INVALID_AT_SOURCE` flags
+   the set and leaves `period_start` and `period_end` exactly as printed.
+   Blanking them would hide the district's own error behind what reads as a
+   missing field, and a reader checking this layer against the page needs to
+   see what the page shows.
+
+10. **Period codes never overwrite a reconciliation code.** `reason_code`
+    holds one value and a set that does not balance has something more
+    important to say than that its header was quiet. The invariant is
+    asserted independently in `fixtures.py`, so nothing depends on the code
+    winning the slot. Consequence, recorded because it is a real gap: two
+    sets lose an invented period with no code marking it, and only the note
+    on the set records it.
+
+11. **The date pattern was NOT widened.** Two era-B/C listings state a
+    hyphenated period — `3-9-17 through 3-16-17` — that `PERIOD_RX` cannot
+    read, so they will be recorded `PERIOD_NOT_STATED` when the truth is
+    "stated in a form this layer does not read". Widening the pattern adds
+    data rather than removing wrong data, was not what the ruling asked for,
+    and needs its own verification pass. The note attached to the set says
+    what is actually true instead. Open item.
+
+### What changed, second commit
+
+| File | Change |
+|---|---|
+| `facts/vouchers/vendors.py` | `WithheldNameIndex` — bucketed find-and-mask over free text, skipping any hit inside a longer published payee name; `is_maskable`; `name_pattern` anchored with lookarounds; real payee names removed from comments. |
+| `facts/vouchers/samples.py` | Masks the description column and the verbatim quote; own-payee `redact_name` runs first so an unlocatable name still suppresses the whole quote. |
+| `facts/vouchers/export_cycle.py` | Masks the rendered markdown and every CSV cell; reports how many names it masked. |
+| `facts/vouchers/test_no_leaks.py` | All three patches: watch list, suffix variants, word boundaries — by using the writers' own index. |
+| `facts/vouchers/test_payees.py` | Fixtures are SHA-256 hashes resolved against the live payee table; three integrity tests; a new masking test over all 31 F1+F4 shapes. |
+| `facts/vouchers/parsers.py` | `header_region()`; the period is read from the header only, never from a line item. |
+| `facts/vouchers/build.py` | `apply_period_status()`, the two reason codes, and their parse-log statuses. |
+| `facts/vouchers/fixtures.py` | `check_period_invariant`, registered in the runner. |
+| `facts/vouchers/schema.sql` | Both new codes in both CHECK constraints; `CREATE TABLE` status list re-synced with the `ALTER` block it had drifted from. |
+| `facts/vouchers/db.py` | `standard_conforming_strings` verified rather than assumed; correct literal rendering for backslashes; UTF-8 pinned end to end. |
+| `facts/vouchers/test_parsers.py` | 8 real payees replaced with invented names of the same shape. |
+| `docs/data-paths.md` | Why `pg_hba` demands a password from the host, and the credential-free read path. |
+| `reports/*.md`, `docs/session-logs/*.md` | Individuals' names replaced with descriptions. Figures and findings untouched. |
+
+### The number the ruling asked for
+
+323 tracked text files searched against all 10,656 withheld payees:
+
+- `facts/vouchers/samples/` and `exports/` with any withheld name: **0**
+- voucher package, its reports and debriefs, with an **individual**: **0**
+- rest of the repository with an individual: **3**, all in `facts/minutes`,
+  outside this session's write scope and reported not fixed
 
 ## Next session starts at
 

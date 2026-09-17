@@ -131,6 +131,55 @@ Neither file is in git, and neither ever was: `.env` and `.env.*` are ignored
 (`.gitignore:2-3`), nothing matching `*.env` is tracked at `HEAD`, and nothing matching it has
 been added on any branch in this repository's history. Verified 2026-09-15.
 
+### Why the password is needed at all — and when it is not
+
+**The database is configured to trust loopback. The host is not on loopback as far as
+Postgres is concerned.** `pg_hba.conf` inside the container reads, in order:
+
+```
+local   all  all                     trust      <- a client running INSIDE the container
+host    all  all  127.0.0.1/32       trust      <- the CONTAINER's own loopback
+host    all  all  ::1/128            trust
+...
+host    all  all  all                scram-sha-256   <- line 128: everything else
+```
+
+The container publishes `127.0.0.1:5432` on the host through rootless Podman's `pasta`
+networking. A connection from the host is translated on its way in, so by the time Postgres
+sees it the source address is **not** `127.0.0.1` — it is the forwarder's address inside the
+container's network namespace. The three `trust` lines therefore do not match, the connection
+falls through to line 128, and `scram-sha-256` demands a password. The container log names the
+line that matched, which is the quickest way to confirm this:
+
+```
+FATAL:  password authentication failed for user "boarddocs"
+DETAIL: Connection matched pg_hba.conf line 128: "host all all all scram-sha-256"
+```
+
+This is **not** a misconfiguration to fix. Loopback-only publishing plus password auth from
+the host is the intended posture; the `trust` lines exist for maintenance from inside the
+container.
+
+**The consequence, and the way around it for read-only work.** A session with no credential
+can still read, because a client running inside the container matches line 1:
+
+```bash
+podman exec -i boarddocs-postgres psql -U boarddocs -d boarddocs   # no password needed
+```
+
+`facts/vouchers/db.py` exposes this as an **opt-in, read-only** transport:
+
+```bash
+export VOUCHERS_DB_TRANSPORT=podman     # reads only; writes still need a credential
+```
+
+Set it and every read path in the voucher package — `samples.py`, `export_cycle.py`,
+`fixtures.py`, `withheld_report.py`, `build.py --dry-run` and the test suite — runs with no
+password anywhere in the environment. Unset, behaviour is exactly as before. Each statement is
+wrapped in `BEGIN; SET TRANSACTION READ ONLY`, so the server refuses a write on this path
+regardless of what is passed to it. **`build.py --reload` writes and still needs the
+credential from `ksd-main/.env`.**
+
 ---
 
 ## Known-stale references

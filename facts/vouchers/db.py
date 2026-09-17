@@ -147,6 +147,10 @@ _JSON_WRAPPER = (
 
 _ROW_NUMBER_KEY = "_rn"
 
+# Cached answer to "does this server treat a backslash literally?". One
+# query per process; None until asked.
+_SCS: bool | None = None
+
 
 def use_psql_transport() -> bool:
     """Whether read queries should go through ``podman exec ... psql``.
@@ -157,16 +161,67 @@ def use_psql_transport() -> bool:
     return os.environ.get(TRANSPORT_ENV, "").strip().lower() == "podman"
 
 
-def _quote(value: Any) -> str:
-    """Render one query parameter as a SQL literal, using psycopg2.
+def _standard_conforming_strings() -> bool:
+    """Whether the server treats a backslash in a literal as an ordinary character.
 
-    psycopg2's adapters normally consult the connection for the client
-    encoding and for ``standard_conforming_strings``. With no connection
-    they assume neither, which is only safe for text that contains no
-    backslash and no non-ASCII character. Rather than guess, anything
-    outside that domain raises: a query that cannot be rendered exactly
-    must fail loudly, not quietly produce different SQL than the psycopg2
-    path would have.
+    Asked once per process, with a query that takes no parameters, so there
+    is no chicken-and-egg problem with the renderer below.
+
+    Returns:
+        True when ``standard_conforming_strings`` is on.
+    """
+    global _SCS
+    if _SCS is None:
+        rows = _psql_rows("SELECT current_setting('standard_conforming_strings') AS v")
+        _SCS = bool(rows) and rows[0].get("v") == "on"
+    return _SCS
+
+
+def _quote_text(value: str) -> str:
+    r"""Render one text parameter as a SQL literal.
+
+    Under ``standard_conforming_strings = on`` -- the server default since
+    PostgreSQL 9.1, and checked here rather than assumed -- the complete
+    rule for a single-quoted literal is that ``'`` is written twice and
+    every other character, backslash included, stands for itself.
+
+    psycopg2's adapter is used as a cross-check wherever it is known to be
+    exact without a connection, which is every string with no backslash. It
+    cannot be used for the backslash case: with no connection it assumes
+    ``standard_conforming_strings`` is OFF and doubles them, which would
+    turn a regex parameter such as ``\\s+`` into something that matches
+    different rows. That is the bug this function exists to avoid, and it
+    was caught by the guard that used to sit here refusing the value.
+
+    Args:
+        value: The text to render.
+
+    Returns:
+        The SQL literal.
+
+    Raises:
+        ValueError: When the server is not in standard-conforming mode, or
+            when the cross-check disagrees.
+    """
+    if not _standard_conforming_strings():
+        raise ValueError(
+            f"{TRANSPORT_ENV}=podman requires standard_conforming_strings=on; "
+            f"this server has it off. Run with a database credential instead."
+        )
+    literal = "'" + value.replace("'", "''") + "'"
+    if "\\" not in value and value.isascii():
+        expected = adapt(value).getquoted().decode("ascii")
+        if expected != literal:
+            raise ValueError(f"literal rendering disagrees with psycopg2 for {value!r}")
+    return literal
+
+
+def _quote(value: Any) -> str:
+    """Render one query parameter as a SQL literal.
+
+    Text goes through :func:`_quote_text`. Everything else goes through
+    psycopg2's own adapter, which needs no connection for numbers, booleans,
+    NULL and dates.
 
     Args:
         value: A parameter value.
@@ -175,36 +230,28 @@ def _quote(value: Any) -> str:
         The SQL literal for that value.
 
     Raises:
-        ValueError: When the value cannot be rendered exactly without a
-            live connection.
+        ValueError: When the value is of a type this transport does not
+            render.
     """
     if isinstance(value, list | tuple):
-        for item in value:
-            _check_renderable(item)
-    else:
-        _check_renderable(value)
+        return "ARRAY[" + ",".join(_quote(item) for item in value) + "]"
+    if isinstance(value, str):
+        return _quote_text(value)
+    _check_renderable(value)
     return adapt(value).getquoted().decode("ascii")
 
 
 def _check_renderable(value: Any) -> None:
-    """Reject values a connection-less adapter would render inexactly.
+    """Reject non-text values this transport does not render.
 
     Args:
         value: A scalar parameter value.
 
     Raises:
-        ValueError: When the value is text carrying a backslash or a
-            non-ASCII character.
+        ValueError: When the type is not one psycopg2 can adapt without a
+            connection.
     """
     if value is None or isinstance(value, bool | int | Decimal):
-        return
-    if isinstance(value, str):
-        if not value.isascii() or "\\" in value:
-            raise ValueError(
-                f"{TRANSPORT_ENV}=podman cannot render this parameter exactly "
-                f"(non-ASCII or backslash): {value!r}. Run with a database "
-                f"credential instead."
-            )
         return
     if hasattr(value, "isoformat"):  # date / datetime
         return
@@ -252,19 +299,42 @@ def _psql_query_dicts(sql: str, params: tuple | None = None) -> list[dict]:
     Raises:
         RuntimeError: When podman is absent or psql exits non-zero.
     """
+    return _psql_rows(_bind(sql, params))
+
+
+def _psql_rows(sql_text: str) -> list[dict]:
+    """Run already-rendered SQL inside the container and return its rows.
+
+    Split out from :func:`_psql_query_dicts` so the one query that has to
+    run BEFORE the parameter renderer is ready -- the
+    ``standard_conforming_strings`` check -- can reach the server without
+    going back through the renderer.
+
+    Args:
+        sql_text: Complete SQL with every literal already rendered.
+
+    Returns:
+        All result rows as dicts, in the order the query produced them.
+
+    Raises:
+        RuntimeError: When podman is absent or psql exits non-zero.
+    """
     # Resolved to an absolute path rather than left as "podman", so what
     # runs cannot depend on PATH ordering at call time.
     podman = shutil.which("podman")
     if podman is None:
         raise RuntimeError(f"{TRANSPORT_ENV}=podman is set but podman is not on PATH")
     container = os.environ.get(CONTAINER_ENV) or DEFAULT_CONTAINER
-    script = "BEGIN;\nSET TRANSACTION READ ONLY;\n" + _JSON_WRAPPER.format(sql=_bind(sql, params)) + "\nCOMMIT;\n"
-    # No shell: the argument vector is fixed and the SQL travels on stdin.
+    script = "BEGIN;\nSET TRANSACTION READ ONLY;\n" + _JSON_WRAPPER.format(sql=sql_text) + "\nCOMMIT;\n"
+    # UTF-8 is pinned on both sides rather than inherited from the locale,
+    # so a payee name outside ASCII travels unchanged.
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell, SQL on stdin
         [
             podman,
             "exec",
             "-i",
+            "--env",
+            "PGCLIENTENCODING=UTF8",
             container,
             "psql",
             "-U",
@@ -276,16 +346,17 @@ def _psql_query_dicts(sql: str, params: tuple | None = None) -> list[dict]:
             "-v",
             "ON_ERROR_STOP=1",
         ],
-        input=script,
+        input=script.encode("utf-8"),
         capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"psql failed in container {container}: {result.stderr.strip()[:500]}")
+        raise RuntimeError(
+            f"psql failed in container {container}: {result.stderr.decode('utf-8', 'replace').strip()[:500]}"
+        )
     # parse_float=Decimal: row_to_json prints a numeric as a bare JSON
     # number, and reading it as a float would silently round money.
-    rows = json.loads(result.stdout or "[]", parse_float=Decimal)
+    rows = json.loads(result.stdout.decode("utf-8") or "[]", parse_float=Decimal)
     for row in rows:
         row.pop(_ROW_NUMBER_KEY, None)
     return rows

@@ -526,7 +526,7 @@ requires, and now with the evidence for each rule:
 
 The brief says the export never lists a personal name. The comma form catches 654 of
 them reliably. But the corpus also pays individuals in `Given Surname` form —
-`Bradley Quorvin`, `(individual payee, name withheld)`, `(individual payee, name withheld)`, `(individual payee, name withheld)` — and **no
+`(individual payee, name withheld)`, `(individual payee, name withheld)`, `(individual payee, name withheld)`, `(individual payee, name withheld)` — and **no
 deterministic rule distinguishes those from a two-word company** without a name
 dictionary, which is a guess by another route. The only safe deterministic rule is
 positive: an allow-list of watch-list vendors plus everything carrying a corporate
@@ -534,7 +534,7 @@ suffix; everything else is withheld from the export and stays in the table. See
 **D5**.
 
 (One vendor-master artifact is worth knowing about:
-`Brielle **USE 001 Creaser ***DO NOT USE***` is a real vendor string in this data.)
+`(individual payee, name withheld)` is a real vendor string in this data.)
 
 ---
 

@@ -692,6 +692,56 @@ def check_no_silent_acceptance(suite: Suite) -> None:
         )
 
 
+def check_period_invariant(suite: Suite) -> None:
+    """Assert that no set states a warrant period that ends before it begins.
+
+    A one-line invariant that found two things nothing else did: a source
+    document printing the wrong year (2026-01-14 GF, which states
+    "11/14/25 through 01/08/25" while every other fund that night states
+    01/08/26), and a real defect in this code (2025-08-13 GF, whose period
+    was read out of the first line item's description because that listing
+    prints no period at all).
+
+    A set whose invalid period is the document's own is expected to carry
+    ``PERIOD_INVALID_AT_SOURCE`` and is reported rather than failed -- the
+    check exists to catch periods this code invented, and a district typo
+    faithfully recorded is not that. A set with an invalid period and no
+    such code is a **FAIL**: something derived it.
+
+    Args:
+        suite: Suite to record into.
+    """
+    rows = db.query_dicts(
+        """
+        SELECT set_id, period_start::text AS period_start, period_end::text AS period_end,
+               COALESCE(reason_code, '') AS reason_code
+        FROM facts.voucher_set
+        WHERE period_end < period_start
+        ORDER BY set_id
+        """,
+        None,
+    )
+    underived = [r for r in rows if r["reason_code"] != "PERIOD_INVALID_AT_SOURCE"]
+    if underived:
+        suite.add(
+            Result(
+                "contract_period_invariant",
+                "FAIL",
+                "0 sets with period_end < period_start and no PERIOD_INVALID_AT_SOURCE",
+                f"{len(underived)}: {[r['set_id'] for r in underived[:10]]}",
+            )
+        )
+    else:
+        suite.add(
+            Result(
+                "contract_period_invariant",
+                "PASS",
+                "0 sets with period_end < period_start and no PERIOD_INVALID_AT_SOURCE",
+                f"0 ({len(rows)} flagged at source: {[r['set_id'] for r in rows]})",
+            )
+        )
+
+
 def check_every_line_has_a_locator(suite: Suite) -> None:
     """Assert that every line carries a resolvable locator.
 
@@ -972,6 +1022,7 @@ def run() -> Suite:
     check_gf_components(suite, sets)
     check_cumulative(suite, sets)
     check_no_silent_acceptance(suite)
+    check_period_invariant(suite)
     check_every_line_has_a_locator(suite)
     check_advisory_counts(suite, sets)
     check_advisory_vendors(suite, sets)

@@ -32,23 +32,27 @@ from __future__ import annotations
 import functools
 import os
 import re
+from collections import defaultdict
+from collections.abc import Iterable
 
 WHITESPACE_RX = re.compile(r"\s+")
 TRAILING_PUNCT = ".,-&; "
 
-# "Harrow, Jason Christopher", "Okonkwo, Justin W", "Ashby, DeVona L".
-# 654 of 3,527 distinct names, 18.5%. These are refund and reimbursement
-# payees -- real people being paid back by their school district.
+# The "Surname, Given Middle" form: 654 of 3,527 distinct names, 18.5%.
+# These are refund and reimbursement payees -- real people being paid back
+# by their school district -- so no example of one is written here. The
+# fixtures that pin this rule live in test_payees.py as hashes.
 #
-# The surname part is at most two tokens ("Van Sielen, Mary"), which is what
-# keeps "Hearing, Speech & Deafness Ctr" and "NWAP, Inc" out: both matched
-# an earlier, looser rule and were withheld from the export as though they
+# The surname part is at most two tokens, which is what keeps
+# "Hearing, Speech & Deafness Ctr" and "NWAP, Inc" out: both matched an
+# earlier, looser rule and were withheld from the export as though they
 # were individuals.
 PERSON_COMMA_RX = re.compile(r"^[A-Z][A-Za-z''\-]+(?:\s+[A-Z][A-Za-z''\-]+)?,\s+[A-Z][A-Za-z.''\-]*\s*[A-Za-z.''\-]*$")
 
 # Names that carry a corporate suffix are organizations, not individuals.
 # This is the positive half of the export rule: an allow-list, because no
-# deterministic rule separates "Bradley Quorvin" from a two-word company.
+# deterministic rule separates a "Given Surname" payee from a two-word
+# company. That is finding F4, and it is why the default is to withhold.
 CORPORATE_SUFFIX_RX = re.compile(
     r"(?:^|\s)(?:inc|llc|llp|ltd|co|corp|corporation|company|pllc|p\.?c|lp"
     r"|assn|association|dist|district|univ|university|college|school|schs"
@@ -63,8 +67,8 @@ CORPORATE_SUFFIX_RX = re.compile(
 # Organization names that are a single all-caps token or acronym.
 #
 # All-caps alone is NOT a safe organization signal in this corpus: it also
-# pays individuals in all caps ("(individual payee, name withheld)" on the 2022 ASB listing).
-# Only a single token qualifies.
+# pays individuals in all caps -- there is a two-token, all-caps personal
+# name on the 2022 ASB listing, which is why only a SINGLE token qualifies.
 ACRONYM_RX = re.compile(r"^[A-Z0-9&.\-]{2,}$")
 
 # Signals that a name belongs to an organization and cannot belong to a
@@ -140,8 +144,8 @@ def is_person_shaped(raw: str | None) -> bool:
     """Whether a vendor name is in the ``Surname, Given`` personal form.
 
     This catches 654 of the 3,527 distinct names in the corpus. It does
-    **not** catch ``Given Surname`` payees such as ``Bradley Quorvin``,
-    because no deterministic rule separates those from a two-word company.
+    **not** catch ``Given Surname`` payees, because no deterministic rule
+    separates those from a two-word company.
     The export therefore uses :func:`is_exportable` rather than the negation
     of this function.
 
@@ -274,13 +278,12 @@ MARKERS_ADDED = (
 BUSINESS_MARKERS = frozenset(MARKERS_SPECIFIED) | frozenset(MARKERS_ADDED)
 
 # Markers that are also ordinary surnames. One, found by running the
-# classifier over all 13,291 payees and reading what it newly released:
-# "(individual payee, name withheld)" and "(individual payee, name withheld)" are two people, and "Faith Baptist
-# Church" is a congregation. A surname-like marker therefore only counts
-# when the name is long enough to be a description of an organization
-# rather than a person's two-token name -- which is what separates those
-# two payees from "Kent Covenant Church" and "Seattle Buddhist Church
-# Matsuri Taiko".
+# classifier over all 13,291 payees and reading what it newly released: two
+# payees whose surname is "Church" are people, and "Faith Baptist Church"
+# is a congregation. A surname-like marker therefore only counts when the
+# name is long enough to be a description of an organization rather than a
+# person's two-token name -- which is what separates those two payees from
+# "Kent Covenant Church" and "Seattle Buddhist Church Matsuri Taiko".
 #
 # This is not a list of "words that look like names". It is a list of words
 # that ARE markers on this list AND are attested surnames in this corpus.
@@ -294,7 +297,7 @@ SURNAME_LIKE_MIN_TOKENS = 3
 # Generational suffixes. Listed so they can be removed before marker
 # matching and so the report can say plainly that they are inert: a suffix
 # is a fact about a person, and treating one as evidence of a company is
-# how "(individual payee, name withheld)" came to be classified as a business.
+# how an F1 payee carrying "III" came to be classified as a business.
 NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
 
 # The description the district prints on a hand-cut payroll cheque. The
@@ -455,9 +458,9 @@ def classify_payee(raw: str | None, has_payroll_handwrite: bool = False) -> tupl
         # business really can be printed "Hearing, Speech & Deafness Ctr".
         return True, "allowlist"
     if is_person_shaped(raw):
-        # A surname can be a marker word. "(individual payee, name withheld)" is a person
-        # named Church, and the first run of this classifier over the corpus
-        # published him. is_person_shaped already distinguishes that from
+        # A surname can be a marker word: a payee whose surname is
+        # "Church" is a person, and the first run of this classifier over
+        # the corpus published them. is_person_shaped distinguishes that from
         # "NWAP, Inc" and "Smith, LLC", where the text after the comma is a
         # legal form rather than a given name, so the two survive this guard.
         return False, "person_shaped"
@@ -526,10 +529,17 @@ def publishable_name(
 def name_pattern(raw: str | None) -> re.Pattern | None:
     r"""Build the pattern that finds a payee's printed name in free text.
 
-    Tokens are joined with ``\\s+`` because the layout text a locator quote
+    Tokens are joined with ``\s+`` because the layout text a locator quote
     is cut from carries the PDF's own spacing, which is not the spacing in
     ``vendor_raw``: "Hearing,  Speech &   Deafness Ctr" and "Hearing, Speech
     & Deafness Ctr" are the same name on the same page.
+
+    **The match is anchored at both ends.** Without that, a short name
+    matches inside an ordinary word: the payee ``G GROUP`` was found in
+    "LAP Learnin*g Group* Supplies", which is not that payee and is not a
+    disclosure of anything. Lookarounds rather than ``\b`` so a name that
+    begins or ends with punctuation -- ``B & H PHOTO-VIDEO`` --  anchors
+    the same way as one that does not.
 
     Args:
         raw: Vendor name exactly as printed.
@@ -540,7 +550,187 @@ def name_pattern(raw: str | None) -> re.Pattern | None:
     tokens = [re.escape(t) for t in display_name(raw).split()]
     if not tokens:
         return None
-    return re.compile(r"\s+".join(tokens), re.I)
+    return re.compile(r"(?<!\w)" + r"\s+".join(tokens) + r"(?!\w)", re.I)
+
+
+# ------------------------------------------- withheld names in free text --
+#
+# The payee column is not the only place a payee's name reaches a published
+# file. A voucher line's description is the district's own free text and it
+# names people and organizations directly -- "Safety-Care Recertification
+# training for <person>", "Due05 - TEAMSTERS DUES", "Comcast Fiber WAN" --
+# and the line's verbatim quote carries the whole printed row.
+#
+# So the same rule that governs the payee column governs the text beside
+# it, with the same token, and it is implemented ONCE here rather than in
+# each writer. The leak check uses this class too. That matters: the last
+# round of drift between the check and the writers did not come from a
+# second copy of the rule, it came from the two calling the shared rule
+# with different arguments, and the fix for that is a shared object rather
+# than a shared function.
+#
+# TWO THINGS IT DELIBERATELY DOES NOT MASK:
+#
+# * A withheld name that lies inside a LONGER PUBLISHED payee name at the
+#   same position. This corpus prints the same business with and without
+#   its legal suffix and keeps the two as separate payees on purpose --
+#   "Smith Inc" and "Smith LLC" can be different companies -- so "ANIXTER"
+#   is withheld while "Anixter Inc" publishes. They are one organization.
+#   Masking the first inside the second would turn a published company's
+#   name into "(name withheld) Inc" and would disclose nothing by leaving
+#   it alone.
+# * A SINGLE-TOKEN name shorter than MASK_MIN_LENGTH. Anchoring stops a
+#   short name matching inside a word, but it does not stop "Club", "CASH"
+#   or "Acct" -- all three are real single-token payees here -- matching
+#   the ordinary English words in a description and shredding the text.
+#
+#   The rule is deliberately NOT a flat length cut-off, and the difference
+#   matters to real people. Measured over the corpus: 131 withheld payees
+#   are shorter than 7 characters. 107 are single tokens and every one is
+#   an organization or an acronym. The other 24 have two tokens, and 23 of
+#   those read as personal names -- two short tokens each, the shape common
+#   in Vietnamese, Chinese and Korean names. A flat length cut-off would
+#   have left exactly the people out of the control,
+#   and it would have done it to the payees with the shortest names, which
+#   is not a neutral way to fail. Two tokens with whitespace between them,
+#   anchored at both ends, is specific enough to mask on at any length.
+
+MASK_MIN_LENGTH = 7
+
+
+def is_maskable(name: str) -> bool:
+    """Whether a withheld name is specific enough to search text for.
+
+    Args:
+        name: A payee name, already tidied by :func:`display_name`.
+
+    Returns:
+        True when the name has two or more tokens, or is long enough on
+        its own. See the comment above for the measurements behind it.
+    """
+    return len(name.split()) > 1 or len(name) >= MASK_MIN_LENGTH
+
+
+def _index_key(raw: str) -> str | None:
+    """Return the first matchable token of a name, for bucketing.
+
+    Args:
+        raw: Vendor name exactly as printed.
+
+    Returns:
+        The lower-cased first token, or None when the name has none.
+    """
+    tokens = [t for t in TOKEN_SPLIT_RX.split(display_name(raw)) if t]
+    return tokens[0].casefold() if tokens else None
+
+
+class WithheldNameIndex:
+    """Finds and masks withheld payee names in a document's free text.
+
+    Built once per writer from that writer's own view of who is published,
+    so a file's text and its payee column can never disagree about a name.
+
+    Matching is bucketed on each name's first token, so a description is
+    only tested against the handful of names whose first token it actually
+    contains rather than against all 13,000.
+    """
+
+    def __init__(self, withheld: Iterable[str], published: Iterable[str]) -> None:
+        """Build the index.
+
+        Args:
+            withheld: Payee names that must not appear.
+            published: Payee names that may appear, used to recognise a
+                withheld name sitting inside a longer published one.
+        """
+        self._withheld: dict[str, list[tuple[str, re.Pattern]]] = defaultdict(list)
+        self._published: dict[str, list[tuple[str, re.Pattern]]] = defaultdict(list)
+        for names, bucket in ((withheld, self._withheld), (published, self._published)):
+            for raw in names:
+                name = display_name(raw)
+                if not is_maskable(name):
+                    continue
+                key = _index_key(name)
+                pattern = name_pattern(name)
+                if key and pattern is not None:
+                    bucket[key].append((name, pattern))
+
+    def __len__(self) -> int:
+        """How many withheld names the index carries.
+
+        Returns:
+            The count, so a caller can assert the index is not empty --
+            a leak check over an empty withheld list passes trivially.
+        """
+        return sum(len(v) for v in self._withheld.values())
+
+    def _spans(self, bucket: dict, text: str, keys: set[str]) -> list[tuple[int, int, str]]:
+        """Collect every occurrence from one bucket.
+
+        Args:
+            bucket: Either the withheld or the published index.
+            text: The text to search.
+            keys: First tokens present in the text.
+
+        Returns:
+            ``(start, end, name)`` for every match.
+        """
+        found = []
+        for key in keys:
+            for name, pattern in bucket.get(key, ()):
+                found.extend((m.start(), m.end(), name) for m in pattern.finditer(text))
+        return found
+
+    def occurrences(self, text: str | None) -> list[tuple[int, int, str]]:
+        """Every withheld name in the text that is not part of a published one.
+
+        Args:
+            text: Free text from a document.
+
+        Returns:
+            ``(start, end, name)`` in document order.
+        """
+        if not text:
+            return []
+        keys = {t.casefold() for t in TOKEN_SPLIT_RX.split(text) if t}
+        hits = self._spans(self._withheld, text, keys)
+        if not hits:
+            return []
+        covers = self._spans(self._published, text, keys)
+        keep = [
+            (start, end, name)
+            for start, end, name in hits
+            if not any(c0 <= start and c1 >= end and (c1 - c0) > (end - start) for c0, c1, _ in covers)
+        ]
+        return sorted(set(keep))
+
+    def mask(self, text: str | None) -> str:
+        """Replace every withheld name in the text with the withheld label.
+
+        Args:
+            text: Free text from a document.
+
+        Returns:
+            The text with withheld names replaced. Empty input returns "".
+        """
+        if not text:
+            return ""
+        hits = self.occurrences(text)
+        if not hits:
+            return text
+        out = []
+        cursor = 0
+        # Right-to-left would be simpler, but overlapping matches make the
+        # offsets unreliable; walking forward and skipping anything that
+        # starts inside an already-masked span is exact.
+        for start, end, _ in hits:
+            if start < cursor:
+                continue
+            out.append(text[cursor:start])
+            out.append(WITHHELD_LABEL)
+            cursor = end
+        out.append(text[cursor:])
+        return "".join(out)
 
 
 def redact_name(text: str | None, raw: str | None) -> str:

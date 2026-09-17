@@ -26,7 +26,7 @@ from datetime import date
 from decimal import Decimal
 
 import db
-from vendors import is_exportable, normalize_vendor
+from vendors import WithheldNameIndex, is_exportable, normalize_vendor
 
 # Vendors the operator has named for standing attention. These are published
 # by name regardless of whether the suffix rules recognise them: they are an
@@ -119,6 +119,16 @@ WATCH_SQL = """
     GROUP BY 1
 """
 
+# Every payee, so a withheld name can be masked wherever it reaches this
+# file and not only in the vendor column.
+PAYEES_SQL = """
+    SELECT v.display_name,
+           EXISTS (SELECT 1 FROM facts.voucher_line h
+                   WHERE h.vendor_norm = v.vendor_norm
+                     AND h.description ~* 'payroll\\s+handwrite') AS payroll_handwrite
+    FROM facts.vendor v
+"""
+
 RECON_SQL = """
     SELECT fund, basis, register_total, detail_total, delta, match, reason,
            register_warrant_range, locator_register_page, locator_register_quote
@@ -126,6 +136,27 @@ RECON_SQL = """
     WHERE meeting_date = %s
     ORDER BY fund, basis
 """
+
+
+def build_masker() -> WithheldNameIndex:
+    """Build the name index from this writer's own view of who is published.
+
+    Deliberately the same call :func:`exportable_vendors` makes, watch list
+    and all, so this file's free text and its vendor column cannot disagree
+    about a name. The watch list matters here: those vendors are published
+    by the operator's standing instruction, and masking them out of the
+    text beside the table that names them would be this writer arguing with
+    itself.
+
+    Returns:
+        The index, ready to mask.
+    """
+    withheld, published = [], []
+    for row in db.query_dicts(PAYEES_SQL, None):
+        name = row["display_name"]
+        exportable = is_exportable(name, WATCH_LIST_NORMS, bool(row["payroll_handwrite"]))
+        (published if exportable else withheld).append(name)
+    return WithheldNameIndex(withheld, published)
 
 
 def _crosscheck(row: dict) -> str:
@@ -393,16 +424,35 @@ def render(cycle: dict) -> str:
     return text + "\n"
 
 
-def write_csv(cycle: dict, path: str) -> None:
+def write_csv(cycle: dict, path: str, masker: WithheldNameIndex) -> None:
     """Write the same content as CSV.
+
+    Every cell goes through the masker on its way out, for the same reason
+    the markdown does: the CSV is a separate rendering and a control that
+    only covers one of two renderings covers neither.
 
     Args:
         cycle: Output of :func:`load_cycle`.
         path: Destination path.
+        masker: Removes withheld payee names from every written field.
     """
     publishable, _, _ = exportable_vendors(cycle["vendors"])
     with open(path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+        raw = csv.writer(handle)
+
+        class _MaskedWriter:
+            """Masks every cell on the way to the CSV writer."""
+
+            @staticmethod
+            def writerow(cells) -> None:
+                """Write one row with every text cell masked.
+
+                Args:
+                    cells: The row's values.
+                """
+                raw.writerow([masker.mask(c) if isinstance(c, str) else c for c in cells])
+
+        writer = _MaskedWriter()
         writer.writerow(["section", "key", "fund", "value", "detail"])
         for row in cycle["sets"]:
             writer.writerow(
@@ -456,7 +506,16 @@ def main() -> int:
     date.fromisoformat(args.meeting_date)  # reject a malformed date early
 
     cycle = load_cycle(args.meeting_date)
-    text = render(cycle)
+    masker = build_masker()
+    # A final pass over the whole rendered document rather than over one
+    # field. The export composes its prose from structured values, so there
+    # is no single "description" here to guard -- and a control that only
+    # guards the fields someone remembered is the control that missed the
+    # description column last time. A name the export decided to publish is
+    # in the index's published set and is left alone.
+    raw_text = render(cycle)
+    text = masker.mask(raw_text)
+    masked = len(masker.occurrences(raw_text))
 
     out_path = args.output or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -467,9 +526,10 @@ def main() -> int:
     with open(out_path, "w", encoding="utf-8") as handle:
         handle.write(text)
     csv_path = os.path.splitext(out_path)[0] + ".csv"
-    write_csv(cycle, csv_path)
+    write_csv(cycle, csv_path, masker)
     print(f"wrote {out_path}")
     print(f"wrote {csv_path}")
+    print(f"  withheld names masked out of the rendered markdown: {masked}")
     return 0
 
 

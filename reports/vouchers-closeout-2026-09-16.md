@@ -7,6 +7,13 @@
 **Previous report:** `reports/vouchers-closeout-2026-09-15.md`
 **Debrief:** `docs/session-logs/session-debrief-2026-09-16-vouchers-closeout-2.md`
 
+> **Superseded in part.** The operator ruled on everything raised below on
+> 2026-09-16 and the rulings are implemented. Sections 1–3 describe the state
+> that produced those rulings and are left as written. **Read
+> "Rulings implemented" at the foot of this report for what is true now** —
+> in particular, the leak check passes, the artifacts are clean, and the
+> voucher package no longer names an individual anywhere.
+
 ## Outcome first
 
 **The reload is confirmed good. The code is committed. The regenerated
@@ -639,3 +646,344 @@ WHERE period_end < period_start ORDER BY set_id;
 --  2025-08-13:GF | 2025-07-01 | 2025-06-30     <- parse defect
 --  2026-01-14:GF | 2025-11-14 | 2025-01-08     <- source typo
 ```
+
+---
+
+# Rulings implemented — 2026-09-16
+
+The operator ruled on all four open questions and the rulings are built.
+**Everything above this line describes the state that produced them.**
+
+| Ruling | State |
+|---|---|
+| 1. C3 masking + the three leak-test patches | **Done.** Leak check passes on the regenerated artifacts. |
+| 2. Hash the 31 verbatim fixture names | **Done.** 38 fixtures, all resolving; map in gitignored scratch. |
+| 3. Period invariant, two reason codes, parser fix | **Done in code.** Takes effect on the next reload. |
+| 4. Transport stays opt-in; `pg_hba` documented | **Done**, and the transport was hardened along the way. |
+
+**Tests: 386 passed, 0 failed, 0 skipped.** Fixtures: 37 PASS, **1 FAIL**,
+24 REPORT — the one failure is the new period invariant reporting truthfully
+that the database has not been reloaded yet. See ruling 3.
+
+## Ruling 1 — descriptions are masked, and the leak test is fixed
+
+**One object does the masking and the checking.** `vendors.WithheldNameIndex`
+is built by `samples.py`, by `export_cycle.py` and by `test_no_leaks.py`, and
+each builds it from **its own** view of who is published — samples without
+the watch list, exports with it, exactly as each already decided its payee
+column. That is the direct answer to finding D2: the previous drift did not
+come from two copies of the rule, it came from two callers passing different
+arguments to one function, so the fix is a shared object rather than a shared
+function.
+
+Masking uses the same token as the payee column, `(name withheld)`, and it
+covers the sample description column, the sample verbatim quote, the whole
+rendered export markdown and every field of the export CSV.
+
+```
+| (name withheld) | ... | Due05 - (name withheld) DUES for 2025-11-26 Regular Payroll |
+| Amazon Capital Services | ... | Nutritional Snacks ... using (name withheld) Grant funds |
+```
+
+Ordering matters and is pinned in the code: the row's own payee goes through
+`redact_name` **first**, because that function suppresses the whole quote when
+the name cannot be located in it, and only then is the rest of the text
+masked.
+
+**The three patches, all applied:**
+
+- *Watch list.* The test now builds its withheld list with
+  `is_exportable(name, WATCH_LIST_NORMS, handwrite)`. Removes 25 false hits.
+- *Suffix variants.* A hit whose span lies inside a longer published payee
+  name is not a leak — `ANIXTER` inside `Anixter Inc` is one company spelled
+  two ways. This lives in `WithheldNameIndex.occurrences`, so the writers get
+  it too and never mask a published company's name out of its own text.
+  Removes 129 false hits.
+- *Word boundaries.* `name_pattern` is anchored with `(?<!\w)` / `(?!\w)`
+  rather than `\b`, so a name that begins or ends with punctuation anchors the
+  same way. `G GROUP` no longer matches inside "LAP Learnin**g Group**
+  Supplies".
+
+### The length cut-off was replaced, and the reason is not cosmetic
+
+The old test dropped any withheld name of six characters or fewer, because
+without anchoring a short name matches inside ordinary words. Carrying that
+straight over would have been a mistake. Measured over the corpus:
+
+| withheld names shorter than 7 characters | 131 |
+|---|---:|
+| single token — every one an organization or acronym (`AFLAC`, `KCDA`, `Costco`, and also `CASH`, `Club`, `Acct`) | 107 |
+| two tokens | 24 |
+| ...of those 24, names that read as personal | **23** |
+
+**A flat length cut-off leaves exactly the people outside the control, and it
+does it to the payees with the shortest names** — two short tokens each, the
+shape common in Vietnamese, Chinese and Korean names. The rule is now
+`is_maskable`: two or more tokens, **or** seven characters or more. Two
+anchored tokens are specific enough to mask on at any length; a single short
+token is not, which is what keeps `CASH` and `Club` from shredding
+descriptions.
+
+### Result
+
+- `test_no_leaks.py`: **2 passed.**
+- Every tracked file under `facts/vouchers/samples/` and `exports/` searched
+  with the full 10,549-name index: **0 hits.**
+- Exports reported `withheld names masked out of the rendered markdown: 0`
+  on all five cycles. That is the expected answer, not a failure — the export
+  composes its prose from structured values and carries no description text.
+  The pass is in place so that a future field cannot leak by being forgotten.
+
+### Organisations masked or withheld only because the allowlist is empty
+
+Requested separately, and **not a reason to hold the artifacts**. These 45
+names are withheld by the specified marker rule alone; none is an individual.
+They appear in the voucher package's code comments, its fixtures, or its own
+reports, and where they occur in a published artifact's free text they are
+now masked. Populating `fixtures/payee_allowlist.txt` releases any of them:
+
+```
+AASA Membership              ALBERTSONS                   ALL HANDS CMTY INTERP SVCS
+ANIXTER                      ARAMARK                      Amazon.Com
+Area 5 DECA                  B & H PHOTO-VIDEO            BANK OF AMERICA
+COMCAST                      CenturyLink                  Child Support Enforcement
+Consolidated Press Printing In  DAILY JOURNAL OF COMMERCE  DEPARTMENT OF RETIREMENT
+ELECTROCOM                   Elite Performance Dance Camp Elite Performance Dance Camps
+Fred Meyer                   G GROUP                      Happy Feet Boots
+KENT YOUTH & FAMILY          MICRO COMPUTER SYSTEMS       MUSEUM OF FLIGHT
+Monday.com                   PUGET SOUND ENERGY           PUGET SOUND REGIONAL
+RESTORX OF WASHINGTON        SOOS CREEK WATER & SEWER     STANDARD INSURANCE
+Safeway                      THE HEATHMAN LODGE AND HUDSONS BAR AN
+Tacoma Art Museum            Teamsters                    Threshold
+Total Technology             US Bank                      US Foods - Seattle
+UW Botanic Gardens           VAN SICLEN STOCKS            WA ST Patrol
+WA ST THESPIAN SOCIETY       WEA/APA-BLUE CROSS           WEA/APA-WA DENTAL
+Weissman
+```
+
+Three of those are worth a second look before they go on any allowlist:
+**`Threshold`, `Total Technology` and `Weissman`** are payee names that are
+also ordinary words or common nouns, and they are why most of the hits in
+this list are in prose about parsing rather than in anything to do with
+money. **The artifacts are still not committed**, per the ruling.
+
+## Ruling 2 — the fixture names are hashes now
+
+`test_payees.py` carries **no payee name at all**. Each fixture is the
+SHA-256 of the exact payee string, hashed on `display_name`, plus the class
+it belongs to; the test resolves a hash to a name from the live payee table
+at run time. 38 fixtures, **all 38 resolving**. A hash that matches nothing
+is a failure, not a skip.
+
+Three tests guard the fixtures themselves: the group sizes are pinned (17,
+2, 14, 2), every hash must resolve, and every constant must be 64 hex
+characters — so a future edit that pastes a name back in fails in CI rather
+than in a privacy review.
+
+**What this buys and what it does not**, stated in the module docstring
+rather than left implied: SHA-256 of a short string is reversible by anyone
+holding a candidate list, and the payee table is exactly such a list. The
+control is that the table lives in the database and not in git, so the two
+halves are never in the same place. A hash here is not safe to publish
+*alongside* the corpus.
+
+Map written to `facts/vouchers/_build/payee_fixture_map.txt` (gitignored),
+regenerable with `python test_payees.py`.
+
+### Names found elsewhere, and removed
+
+Hashing the fixtures was not sufficient. Searching every tracked file with
+the full withheld list found individuals in five more places, all now fixed:
+
+| File | What was there |
+|---|---|
+| `facts/vouchers/test_parsers.py` | 8 real payees used as parse fixtures. Replaced with invented names of the same shape, each verified not to collide with a real payee. The shapes are what those tests exercise; the identities never were. |
+| `facts/vouchers/vendors.py` | 5 real payees named in comments as examples — **3 of them put there by me earlier in this same session**, while writing the comment that explains why short names must be masked. Replaced with descriptions of the shape. |
+| `reports/vouchers-closeout-2026-09-15.md` | 4 individuals in the C2 finding. |
+| `docs/session-logs/session-debrief-2026-09-15-vouchers-closeout.md` | 3 individuals in the same finding. |
+| `reports/facts-vouchers-recon-2026-09-14.md`, `reports/vouchers-r1-2026-09-15.md` | 8 individuals in older reports. |
+
+Editing historical reports deserves a word, because this package has a
+standing rule against rewriting them: the previous session declined to
+correct a stale *figure* in an old report, on the grounds that doing so
+destroys the record of what was believed when. **A name is not a finding.**
+Every figure, conclusion and date in those reports is untouched; only
+personal names were replaced, with a description of what the name was. The
+record of what was believed is intact.
+
+### Confirmation — the count the ruling asked for
+
+Searched: **323 tracked text files**, against all 10,656 withheld payees
+(10,549 of them specific enough to search for).
+
+| | files |
+|---|---:|
+| A. `facts/vouchers/samples/` and `exports/` containing any withheld name | **0** |
+| B. voucher package, its reports and its debriefs, containing an **individual** | **0** |
+| C. rest of the repository, containing an individual | 3 |
+
+**B is the number the ruling asked for and it is 0.** Twenty-one files in
+the voucher package still contain an organisation's name — the list above —
+which is not a disclosure.
+
+**C is outside this session's write scope and is reported, not fixed.** The
+three files are `facts/minutes/parsers.py`, `facts/minutes/test_parsers.py`
+and `reports/facts-minutes-recon-2026-09-12.md`, one individual each. They
+belong to the `facts/minutes` package. The same treatment applied here would
+work there.
+
+There is also a category the count above does not capture, and it should be
+said plainly: files under `transcription/` and `research/` name **board
+directors and district officials** who are also voucher payees, because they
+are reimbursed. Those are public officials named in public meeting records,
+which is a different thing from a private individual receiving a refund, and
+nothing here should be read as proposing to redact them.
+
+## Ruling 3 — the period invariant
+
+**Parser.** `PERIOD_RX` and `PCARD_RX` now search only `header_region()` —
+page 1 down to, but not including, the first line carrying two or more
+printed amounts. Two amounts is what makes a line a data row in every era in
+this corpus, and no title, fund name or period statement carries them.
+
+**The defect was wider than the one set.** Three sets lose a period that was
+read out of a line item, not one:
+
+| set | period it had | why |
+|---|---|---|
+| `2025-08-13:GF` | 2025-07-01 → 2025-06-30 | from `"Software License Renewal 07/01/25-06/30/25"` |
+| `2017-03-22:ASB` | 2016-11-29 → 2017-01-17 | from a description ~2,600 characters into page 1 |
+| `2017-04-26:ASB` | 2016-12-06 → 2017-01-24 | same shape |
+
+The two 2017 sets never showed up in the backwards-period check because
+their invented ranges happened to run forwards. **They were wrong and nobody
+could have seen it.** That is the argument for the invariant in one line: it
+found a bug it was not looking for.
+
+**And it exposed a second, separate gap.** Both 2017 listings *do* state a
+period in their header — `3-9-17 through 3-16-17` — with hyphens.
+`PERIOD_RX` matches slashes only, so it never read them. Those sets will now
+be recorded as `PERIOD_NOT_STATED` when the truth is "stated in a form this
+layer cannot read". **I did not widen the date pattern** — that adds data
+rather than removing wrong data, it is not what the ruling asked for, and it
+needs its own verification pass. Instead the note attached to the set says
+what is actually true: *"no warrant period could be read from this listing's
+header … either the listing prints none, or it prints one in a format this
+layer does not read."* Open item.
+
+**Reason codes.** `PERIOD_INVALID_AT_SOURCE` where the stated period ends
+before it begins, **with the parsed dates kept exactly as printed** — blanking
+them would hide the district's error behind what reads as a missing field.
+`PERIOD_NOT_STATED` where none could be read. Both are written **only when
+`reason_code` is otherwise empty**: a reconciliation finding outranks a
+metadata one, and the column holds one value. Both added to the
+`voucher_set` CHECK constraint and to the `voucher_parse_log` status list.
+
+> While adding them I found the `CREATE TABLE` status list had drifted from
+> the `ALTER` block at the foot of `schema.sql` — `total_inconsistent_at_source`
+> was added to one and not the other, so a **fresh install from that file
+> would have rejected a status the running database accepts**. Fixed, and the
+> two lists now carry a comment saying they must move together.
+
+**Contract check.** `check_period_invariant` in `fixtures.py` fails on any
+set with `period_end < period_start` that does **not** carry
+`PERIOD_INVALID_AT_SOURCE` — so a period this code invented fails, while a
+district typo faithfully recorded is reported. It is registered in the suite
+runner.
+
+**It currently FAILS, and that is correct.** The database still holds the
+pre-ruling build, where both backwards-period sets carry no reason code:
+
+```
+FAIL  contract_period_invariant
+      expected = 0 sets with period_end < period_start and no PERIOD_INVALID_AT_SOURCE
+      actual   = 2: ['2025-08-13:GF', '2026-01-14:GF']
+```
+
+It passes after `build.py --reload`. Fixtures are 37 PASS / 1 FAIL until then.
+
+### Confirmation: no dollar figure and no reconciliation status changes
+
+`build.py --dry-run` over all 459 sets — which now runs credential-free
+through the transport — compared against the loaded database:
+
+```
+sets in dry run: 459    sets in database: 459    membership identical
+DOLLAR FIGURES changed (stated or parsed total, compared numerically):   0
+LINE COUNTS changed:                                                     0
+RECONCILIATION STATUS changed:                                           0
+REASON CODE changed:                                                    12
+```
+
+All twelve move from no reason code to a period code: eleven to
+`PERIOD_NOT_STATED`, one — `2026-01-14:GF` — to `PERIOD_INVALID_AT_SOURCE`.
+The two 2017 ASB sets are **not** among them, because they already carry
+`TOTAL_NOT_FOUND`; they lose their invented period silently, which is the
+precedence rule working.
+
+> A caution on how that comparison was made. A first pass reported ten
+> "changed" dollar figures which were all `0` against `0.00` — the dry-run log
+> prints a zero Decimal one way and the database stores it another. Comparing
+> the rendered strings would have reported a ten-set money change that does
+> not exist. The figures above are compared as `Decimal`.
+
+## Ruling 4 — the transport, and what running it through `build.py` found
+
+Kept opt-in, default psycopg2, read-only enforced by
+`BEGIN; SET TRANSACTION READ ONLY`. The `pg_hba` explanation is now in
+`docs/data-paths.md`, including the exact log line that identifies the cause
+and the statement that this is the intended posture rather than a
+misconfiguration to fix.
+
+**The transport was also wrong, and the dry run found it.** The first
+attempt to run `build.py --dry-run` through it aborted:
+
+```
+ValueError: VOUCHERS_DB_TRANSPORT=podman cannot render this parameter exactly
+(non-ASCII or backslash): '(General Fund|ACH|...)\\s+(Warrants?|Payments?)'
+```
+
+`census.voucher_agenda_items` binds a regex, and psycopg2's adapter — used
+with no connection — assumes `standard_conforming_strings` is **off** and
+doubles every backslash. That would have turned `\s+` into something matching
+different rows. **The guard caught it rather than letting it through**, which
+is the one thing that had to work, and it is the clearest evidence that
+refusing to guess was the right default.
+
+Now fixed properly rather than by refusing:
+
+- The server's `standard_conforming_strings` is **queried once per process**,
+  not assumed, and the transport refuses to run if it is off.
+- Under that setting the complete rule for a literal is that `'` is doubled
+  and every other character stands for itself. The renderer is cross-checked
+  against psycopg2's adapter for every string where the adapter is known to
+  be exact, so the hand-written rule cannot drift without failing.
+- UTF-8 is pinned on both sides (`PGCLIENTENCODING=UTF8`, bytes in and out)
+  rather than inherited from the locale.
+
+Round-tripped through the server: `a\s+b`, `O'Brien & Sons`, `café`,
+`back\slash`, `%Robert Half%`, `quote'' and \ both` — **all six return
+byte-identical.**
+
+Every read path in the package now runs with no credential: `samples.py`,
+`export_cycle.py`, `fixtures.py`, `withheld_report.py`, `build.py --dry-run`,
+`withheld_report.py` and the whole test suite. `build.py --reload` writes and
+still needs the password from `ksd-main/.env`.
+
+## Open items added by this round
+
+1. **`PERIOD_RX` cannot read a hyphenated period.** At least two era-B/C
+   listings state one and will be recorded `PERIOD_NOT_STATED`.
+   *Next:* widen the pattern and re-verify with the same dry-run diff.
+   *Urgency:* low — metadata only, no money.
+2. **Three files in `facts/minutes` name an individual.** Outside this
+   session's write scope. *Urgency:* medium, same class as the fixture
+   hashing just done here.
+3. **`Threshold`, `Total Technology`, `Weissman`** are payee names that are
+   also ordinary words. Harmless today because nothing masks them in the
+   voucher artifacts, but worth knowing before anyone lowers `is_maskable`
+   further. *Urgency:* low.
+4. **The period reason codes are written only when `reason_code` is free.**
+   Two sets (`2017-03-22:ASB`, `2017-04-26:ASB`) therefore lose an invented
+   period with no code recording it; the note on the set says so, but a query
+   on `reason_code` will not find them. *Urgency:* low.

@@ -405,6 +405,58 @@ def summarize(row: SetRow) -> None:
     row.reason_code = "MULTIPLE_TOTALS" if row.parsed.extra_totals else "OUT_OF_BALANCE"
 
 
+PERIOD_INVALID_AT_SOURCE = "PERIOD_INVALID_AT_SOURCE"
+PERIOD_NOT_STATED = "PERIOD_NOT_STATED"
+
+
+def apply_period_status(row: SetRow) -> None:
+    """Record what the document said about its own warrant period.
+
+    Two facts that were previously silent, and one precedence rule.
+
+    ``PERIOD_INVALID_AT_SOURCE`` -- the listing states a period that ends
+    before it begins. **The parsed dates are kept, not blanked.** They are
+    what the document printed, and a reader checking this layer against the
+    page needs to see the same thing the page shows; blanking them would
+    hide the district's error behind what looks like a missing field.
+
+    ``PERIOD_NOT_STATED`` -- no period could be read from the listing's
+    header. Previously this was an unexplained NULL. **The note is worded
+    carefully and the code name is wider than the fact it records:** some
+    era-B and era-C listings do print a period, hyphenated -- "3-9-17
+    through 3-16-17" -- which ``PERIOD_RX`` does not match, so they land
+    here too. Saying "states none" would be a claim this layer cannot
+    support; saying "none could be read" is what is true either way. The
+    count of sets in each situation is in the session report.
+
+    **Precedence: neither code is ever written over an existing one.** A
+    reconciliation finding outranks a metadata finding -- a set that is out
+    of balance has something more important to say than that its header was
+    quiet -- and ``reason_code`` holds one value. The invariant itself is
+    asserted independently of this field by ``check_period_invariant`` in
+    ``fixtures.py``, so nothing depends on the code winning the slot.
+
+    Args:
+        row: The set to annotate, mutated in place.
+    """
+    start, end = row.parsed.period
+    if start is not None and end is not None and end < start:
+        row.notes.append(
+            f"source error: this listing states a warrant period of {start} through {end}, which ends "
+            f"before it begins. The dates are recorded exactly as printed; the parse is not what is wrong here."
+        )
+        if row.reason_code is None:
+            row.reason_code = PERIOD_INVALID_AT_SOURCE
+        return
+    if start is None and end is None:
+        row.notes.append(
+            "no warrant period could be read from this listing's header, so none is recorded for it. "
+            "Either the listing prints none, or it prints one in a format this layer does not read."
+        )
+        if row.reason_code is None:
+            row.reason_code = PERIOD_NOT_STATED
+
+
 def mark_cumulative(sets: list[SetRow]) -> None:
     """Record, per set, how many of its checks appeared in an earlier set.
 
@@ -992,12 +1044,17 @@ def main() -> None:
         summarize(row)
         if duplicate and row.reason_code is None:
             row.reason_code = "DUPLICATE_SET"
+        apply_period_status(row)
         sets.append(row)
 
         if row.reason_code == COLUMN_AMBIGUOUS:
             status = "column_ambiguous"
         elif row.reason_code == "TOTAL_INCONSISTENT_AT_SOURCE":
             status = "total_inconsistent_at_source"
+        elif row.reason_code == PERIOD_INVALID_AT_SOURCE:
+            status = "period_invalid_at_source"
+        elif row.reason_code == PERIOD_NOT_STATED:
+            status = "period_not_stated"
         else:
             status = {
                 True: "parsed",

@@ -92,12 +92,22 @@ CREATE TABLE IF NOT EXISTS facts.voucher_set (
     -- printed beneath it under any reading of them. Filing the two under
     -- one code would send an auditor to re-read a parse that is correct,
     -- and would hide a class of finding the board is entitled to see.
+    --
+    -- PERIOD_INVALID_AT_SOURCE and PERIOD_NOT_STATED are about the header,
+    -- not about the arithmetic, and they are written only when no
+    -- reconciliation finding already holds this column: a set that is out
+    -- of balance has something more important to say than that its header
+    -- was quiet. period_start and period_end are kept as printed even when
+    -- the period is invalid -- blanking them would hide the district's
+    -- error behind what reads as a missing field.
     reason_code              text
         CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS',
                                'TOTAL_NOT_FOUND', 'NO_TEXT_LAYER',
                                'REGEX_MISS', 'DUPLICATE_SET',
                                'COLUMN_AMBIGUOUS',
-                               'TOTAL_INCONSISTENT_AT_SOURCE', 'OTHER')),
+                               'TOTAL_INCONSISTENT_AT_SOURCE',
+                               'PERIOD_INVALID_AT_SOURCE',
+                               'PERIOD_NOT_STATED', 'OTHER')),
     notes                    text,
 
     source                   text NOT NULL
@@ -245,9 +255,16 @@ CREATE TABLE IF NOT EXISTS facts.voucher_parse_log (
     doc_class            text,
     format_era           text,
     status               text NOT NULL
+        -- Kept in step with the ALTER block at the foot of this file. It
+        -- had drifted: 'total_inconsistent_at_source' was added there and
+        -- not here, so a fresh install from this file would have rejected
+        -- a status an existing database accepts.
         CHECK (status IN ('parsed', 'no_text_layer', 'unreadable',
                           'era_unmatched', 'regex_miss', 'total_not_found',
-                          'out_of_balance', 'column_ambiguous', 'skipped')),
+                          'out_of_balance', 'column_ambiguous',
+                          'total_inconsistent_at_source',
+                          'period_invalid_at_source', 'period_not_stated',
+                          'skipped')),
     pages                integer,
     lines_found          integer NOT NULL DEFAULT 0,
     checks_found         integer NOT NULL DEFAULT 0,
@@ -335,11 +352,13 @@ BEGIN
         CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS', 'TOTAL_NOT_FOUND',
                                'NO_TEXT_LAYER', 'REGEX_MISS', 'DUPLICATE_SET',
                                'COLUMN_AMBIGUOUS', 'TOTAL_INCONSISTENT_AT_SOURCE',
+                               'PERIOD_INVALID_AT_SOURCE', 'PERIOD_NOT_STATED',
                                'OTHER'));
     ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_status_check
         CHECK (status IN ('parsed', 'no_text_layer', 'unreadable', 'era_unmatched',
                           'regex_miss', 'total_not_found', 'out_of_balance',
                           'column_ambiguous', 'total_inconsistent_at_source',
+                          'period_invalid_at_source', 'period_not_stated',
                           'skipped'));
     ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_grid_method_check
         CHECK (grid_method IN ('runs', 'header_band'));

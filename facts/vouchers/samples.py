@@ -27,7 +27,7 @@ import re
 from decimal import Decimal
 
 import db
-from vendors import is_exportable, publishable_name, redact_name
+from vendors import WithheldNameIndex, is_exportable, publishable_name, redact_name
 
 SAMPLE_SIZE = 300
 DEFAULT_SEED = 20260914
@@ -56,6 +56,18 @@ SETS_SQL = """
     FROM facts.voucher_set
     WHERE meeting_date >= %s AND reconciled IS TRUE
     ORDER BY meeting_date, fund
+"""
+
+# Every payee in the corpus, so the writer can mask a withheld name
+# wherever it appears in this file's free text and not only in the column
+# it owns. Measured over the payee's whole history, like the export's own
+# query: a payee who is an employee in March is an employee in May.
+PAYEES_SQL = """
+    SELECT v.display_name,
+           EXISTS (SELECT 1 FROM facts.voucher_line h
+                   WHERE h.vendor_norm = v.vendor_norm
+                     AND h.description ~* 'payroll\\s+handwrite') AS payroll_handwrite
+    FROM facts.vendor v
 """
 
 LINES_SQL = """
@@ -87,6 +99,25 @@ def _withheld(row: dict) -> bool:
         True when the payee name is withheld.
     """
     return not is_exportable(row["vendor_raw"], None, bool(row.get("payroll_handwrite")))
+
+
+def build_masker() -> WithheldNameIndex:
+    """Build the name index from this writer's own view of who is published.
+
+    Deliberately the same call ``_withheld`` makes -- no watch list -- so a
+    name this file withholds from its payee column is the same name it
+    masks out of its description text. A writer whose two halves disagree
+    publishes the name in whichever half is wrong.
+
+    Returns:
+        The index, ready to mask.
+    """
+    withheld, published = [], []
+    for row in db.query_dicts(PAYEES_SQL, None):
+        name = row["display_name"]
+        target = published if is_exportable(name, None, bool(row["payroll_handwrite"])) else withheld
+        target.append(name)
+    return WithheldNameIndex(withheld, published)
 
 
 def money(value: Decimal | None) -> str:
@@ -126,7 +157,7 @@ def sample_size(meeting_date: str, base: int) -> int:
     return base * 2 if meeting_date in DOUBLE_SAMPLE_CYCLES else base
 
 
-def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
+def render(set_row: dict, lines: list[dict], seed: int, drawn: int, masker: WithheldNameIndex) -> str:
     """Render one set's sample as markdown.
 
     Args:
@@ -134,6 +165,7 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
         lines: The sampled lines, in document order.
         seed: The RNG seed used.
         drawn: How many lines were drawn.
+        masker: Removes withheld payee names from descriptions and quotes.
 
     Returns:
         Markdown text.
@@ -191,7 +223,10 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
             flags.append("(negative)")
         if row["reason_code"]:
             flags.append(f"**{row['reason_code']}**")
-        description = (row["description"] or "").replace("|", "\\|")[:70]
+        # Masked BEFORE truncating. Truncating first would leave a name
+        # that starts inside the first 70 characters half-printed, and half
+        # a name beside an amount is still a name to anyone who knows it.
+        description = masker.mask(row["description"]).replace("|", "\\|")[:70]
         vendor = publishable_name(row["vendor_raw"], None, bool(row.get("payroll_handwrite")))
         add(
             f"| {row['line_seq']} | {row['locator_page'] or '—'} | {vendor.replace('|', chr(92) + '|')} | "
@@ -205,9 +240,15 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
     add("Each line as extracted, for exact comparison against the page:")
     add("")
     for row in lines:
-        quote = (row["locator_quote"] or "")[:200]
+        quote = row["locator_quote"] or ""
         if _withheld(row):
+            # This row's own payee first, because redact_name suppresses the
+            # WHOLE quote when the name cannot be located in it -- a
+            # hyphenation or a pdfplumber split inside the name defeats a
+            # pattern while leaving the name perfectly readable to a person.
             quote = redact_name(quote, row["vendor_raw"])
+        # Then every other withheld payee the line happens to name.
+        quote = masker.mask(quote)[:200]
         add(f"- `#{row['line_seq']}` p{row['locator_page']} @{row['locator_char_offset']}: `{quote}`")
     # No trailing blank line: the file must end with exactly one newline or
     # the end-of-file-fixer pre-commit hook rewrites it on every regeneration.
@@ -234,6 +275,7 @@ def main() -> int:
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
+    masker = build_masker()
     sets = db.query_dicts(SETS_SQL, (args.since,))
     if not sets:
         print(f"no reconciling sets on or after {args.since}")
@@ -257,7 +299,7 @@ def main() -> int:
         name = _filename(set_row["set_id"])
         path = os.path.join(args.out, name)
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write(render(set_row, sample, args.seed, drawn))
+            handle.write(render(set_row, sample, args.seed, drawn, masker))
         written.append((path, drawn, len(lines)))
 
     for path, drawn, total in written:

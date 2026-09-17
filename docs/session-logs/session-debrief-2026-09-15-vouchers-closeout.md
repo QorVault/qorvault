@@ -131,8 +131,7 @@ were added (C2); descriptions still carry surnames the payee column withholds
 (C4); F1 names nineteen payees of whom seventeen are people (C5).
 
 One process finding worth repeating here: **the unit tests were all green
-while the classifier was still publishing `(individual payee, name withheld)`, `Dawn
-Church` and `(individual payee, name withheld)`.** Only running it over all 13,291 real payees
+while the classifier was still publishing three payees whose surname is a marker word.** Only running it over all 13,291 real payees
 found them. A privacy control has to be measured against the corpus before it
 is trusted, not against the examples its author thought of.
 

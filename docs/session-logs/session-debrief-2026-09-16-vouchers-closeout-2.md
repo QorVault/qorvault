@@ -306,9 +306,9 @@ git rev-list 29557ed..claude/facts-vouchers | while read c; do
 done
 ```
 
-At the time of writing that prints `artifacts=38` for the three newest
-commits, `artifacts=24` for the four beneath them, and `artifacts=0` for the
-two oldest.
+It prints `artifacts=38` for every commit from `7659f6d` to the tip,
+`artifacts=24` for the four beneath it, and `artifacts=0` for the two
+oldest. Only `artifacts=0` on every line means the rewrite has been run.
 
 **This session's commits add no artifact file and still carry all 38**,
 which is the part that is easy to get wrong: `git show --stat 1f0db30`

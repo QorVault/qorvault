@@ -295,17 +295,26 @@ reason codes — is done and evidenced.
 
 ## The history rewrite — commands, unexecuted
 
-**Scope.** Eight commits, `29557ed` is the merge base with `main`, and
-nothing before it is touched. **Six of the eight carry
-`facts/vouchers/samples` and `exports` in their tree** — 24 files each on
-the four oldest, 38 at `7659f6d` and 38 at this session's commit `1f0db30`.
+**Scope.** Everything after `29557ed`, the merge base with `main`; nothing
+before it is touched. Count the affected commits rather than trusting a
+number in a document that goes stale every time one is added:
 
-That last one is worth being exact about, because the diff and the tree
-say different things. `1f0db30` **adds** no artifact file — `git show
---stat` lists none — but it **inherits** all 38 from its parent, because a
-commit that does not delete a path still carries it. The rewrite therefore
-has to cover this commit too, which is why the range below ends at the
-branch tip and not at `7659f6d`.
+```bash
+git rev-list 29557ed..claude/facts-vouchers | while read c; do
+  printf '%s  artifacts=%s\n' "$(git log -1 --format='%h %s' "$c" | cut -c1-52)" \
+    "$(git ls-tree -r --name-only "$c" -- facts/vouchers/samples exports | wc -l)"
+done
+```
+
+At the time of writing that prints `artifacts=38` for the three newest
+commits, `artifacts=24` for the four beneath them, and `artifacts=0` for the
+two oldest.
+
+**This session's commits add no artifact file and still carry all 38**,
+which is the part that is easy to get wrong: `git show --stat 1f0db30`
+lists none, but a commit that does not *delete* a path still carries it in
+its tree. The rewrite range therefore has to end at the branch tip, not at
+`7659f6d`.
 
 **Facts, re-verified this session, all unchanged:**
 

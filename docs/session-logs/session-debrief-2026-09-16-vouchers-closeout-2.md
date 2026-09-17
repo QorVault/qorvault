@@ -352,10 +352,12 @@ longer the whole job.
 with invented fixtures, and redacted them from four reports and debriefs.
 That fixed the **working tree and `HEAD`** — but a commit keeps what it
 recorded, and those names are still in the older commits. Measured, with
-`git grep` over every commit for all 49 individuals:
+`git grep` over every commit for all 49 individuals, **excluding
+`facts/vouchers/samples` and `exports`** -- those carry names in every commit
+and this same rewrite deletes them outright:
 
 ```
-9640ec0  files=0     <- HEAD, clean
+HEAD     files=0     <- clean; every commit below it is not
 7cebf3f  files=7
 e644038  files=7
 1e23308  files=7
@@ -524,6 +526,14 @@ rm -f /tmp/individuals.txt
 ```
 
 Every line must read `files-naming-an-individual=0`.
+
+**Run before the rewrite it reports non-zero on every commit including the
+tip** -- at the time of writing, 7 at `HEAD` and up to 14 further down. That
+is not a contradiction of "HEAD is clean": this check deliberately does
+**not** exclude `facts/vouchers/samples` and `exports`, and at `HEAD` all
+seven hits are tracked sample files still holding their pre-masking content.
+The rewrite deletes those paths, so after it runs the same command covers
+everything and every line reads zero.
 
 ### Verification 3 — the tag really can restore the old branch
 

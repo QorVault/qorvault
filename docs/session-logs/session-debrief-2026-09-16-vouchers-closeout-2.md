@@ -341,100 +341,138 @@ pre-ruling build.
 Everything else — the rebuild, the STOP check, the HARD fixtures, the
 reason codes — is done and evidenced.
 
-## The history rewrite — commands, unexecuted
+## The history rewrite — commands, unexecuted (RE-ISSUED 2026-09-16)
 
-**Scope.** Everything after `29557ed`, the merge base with `main`; nothing
-before it is touched. Count the affected commits rather than trusting a
-number in a document that goes stale every time one is added:
+**The earlier version of this section is superseded. Do not use it — its
+scope is too narrow.** It removed `facts/vouchers/samples` and `exports`
+from every tree, which was the whole job when it was written. It is no
+longer the whole job.
 
-```bash
-git rev-list 29557ed..claude/facts-vouchers | while read c; do
-  printf '%s  artifacts=%s\n' "$(git log -1 --format='%h %s' "$c" | cut -c1-52)" \
-    "$(git ls-tree -r --name-only "$c" -- facts/vouchers/samples exports | wc -l)"
-done
+**Why the scope grew.** Ruling 2 replaced individuals' names with hashes and
+with invented fixtures, and redacted them from four reports and debriefs.
+That fixed the **working tree and `HEAD`** — but a commit keeps what it
+recorded, and those names are still in the older commits. Measured, with
+`git grep` over every commit for all 49 individuals:
+
+```
+9640ec0  files=0     <- HEAD, clean
+7cebf3f  files=7
+e644038  files=7
+1e23308  files=7
+1f0db30  files=7
+7659f6d  files=4
+512e837  files=3     <- and 3 in each commit below it
+...
+da22888  files=1
 ```
 
-It prints `artifacts=38` for every commit from `7659f6d` to the tip,
-`artifacts=24` for the four beneath it, and `artifacts=0` for the two
-oldest. Only `artifacts=0` on every line means the rewrite has been run.
+Seven paths carry them across eleven commits:
 
-**This session's commits add no artifact file and still carry all 38**,
-which is the part that is easy to get wrong: `git show --stat 1f0db30`
-lists none, but a commit that does not *delete* a path still carries it in
-its tree. The rewrite range therefore has to end at the branch tip, not at
-`7659f6d`.
+```
+facts/vouchers/vendors.py
+facts/vouchers/test_parsers.py
+facts/vouchers/test_payees.py
+docs/session-logs/session-debrief-2026-09-15-vouchers-closeout.md
+reports/facts-vouchers-recon-2026-09-14.md
+reports/vouchers-closeout-2026-09-15.md
+reports/vouchers-r1-2026-09-15.md
+```
 
-**Facts, re-verified this session, all unchanged:**
+So the rewrite now does **two** things in one pass: drop the artifact paths,
+and rewrite the content of those seven files wherever they appear.
 
-- The branch has **never been pushed**: no upstream is configured and
-  `git ls-remote --heads origin claude/facts-vouchers` returns nothing. No
-  force-push, no coordination, nobody else holds the blobs.
-- `git branch -a --contains 95a6880` lists `claude/facts-vouchers` and
-  nothing else.
-- `git-filter-repo` is **not installed**. `filter-branch` is deprecated and
-  slow and neither matters at eight local-only commits; it is one command
-  that either completes or does not. An interactive rebase would stop on
-  conflicts at every step once the first commit drops the paths.
-- This is a **linked worktree** — the object store lives in
-  `~/workspace/projects/ksd-boarddocs-rag/.git` and is shared with three
-  other worktrees on other branches. That is why `filter-repo`'s
-  clone-and-replace model is the wrong shape here.
+**Facts, re-verified, all unchanged:** the branch has never been pushed
+(no upstream, `git ls-remote --heads origin claude/facts-vouchers` returns
+nothing); `git branch -a --contains 95a6880` lists only this branch;
+`git-filter-repo` is not installed; this is a linked worktree whose object
+store is shared with three other worktrees, which is why filter-repo's
+clone-and-replace model is the wrong shape here.
+
+### 0. The substitution set, and why it is not in the repository
+
+`facts/vouchers/_build/redaction-subs.tsv` holds 49 `old<TAB>new` pairs. It
+is a list of individuals' names, so it lives in gitignored scratch and is
+moved out of the tree entirely before the rewrite runs.
+
+It has been **verified**: every affected blob in every commit was piped
+through the filter and re-searched, and no individual's name survives in any
+of them.
 
 ```bash
 cd ~/workspace/projects/ksd-vouchers
+cp facts/vouchers/_build/redaction-subs.tsv  ~/redaction-subs.tsv
+cp facts/vouchers/_build/redact_stream.py    ~/redact_stream.py
+export REDACTION_SUBS=~/redaction-subs.tsv
+```
 
-# 0. Record the pre-rewrite tip and tag it. The tag is the way back and
-#    must not be deleted until the verification below has passed.
+Write the index filter to its own file — quoting a loop inside
+`--index-filter '...'` is how this goes wrong:
+
+```bash
+cat > ~/redact-index-filter.sh <<'SCRIPT'
+set -e
+git rm -r --cached --ignore-unmatch facts/vouchers/samples exports >/dev/null
+for f in facts/vouchers/vendors.py \
+         facts/vouchers/test_parsers.py \
+         facts/vouchers/test_payees.py \
+         docs/session-logs/session-debrief-2026-09-15-vouchers-closeout.md \
+         reports/facts-vouchers-recon-2026-09-14.md \
+         reports/vouchers-closeout-2026-09-15.md \
+         reports/vouchers-r1-2026-09-15.md ; do
+    entry=$(git ls-files -s -- "$f")
+    [ -n "$entry" ] || continue
+    mode=$(printf '%s' "$entry" | cut -d' ' -f1)
+    blob=$(printf '%s' "$entry" | cut -d' ' -f2)
+    new=$(git cat-file blob "$blob" | python3 "$HOME/redact_stream.py" | git hash-object -w --stdin)
+    git update-index --cacheinfo "$mode,$new,$f"
+done
+SCRIPT
+chmod +x ~/redact-index-filter.sh
+```
+
+### 1. Safety tag, and a clean tree
+
+```bash
+cd ~/workspace/projects/ksd-vouchers
 PRE=$(git rev-parse claude/facts-vouchers)
 echo "pre-rewrite tip: $PRE"          # WRITE THIS DOWN
 git tag pre-redaction-2026-09-16 claude/facts-vouchers
+```
 
-# 1. The working tree MUST be clean. filter-branch refuses to run with
-#    unstaged changes, and this tree has 38 modified artifact files plus 4
-#    new ones sitting uncommitted. They are cheap to reproduce -- one run of
-#    samples.py and five of export_cycle.py -- and they have to be
-#    regenerated after C3 is ruled on anyway, so discard them rather than
-#    parking them.
+filter-branch refuses to run with unstaged changes, and this tree has the
+regenerated artifacts sitting uncommitted. They are cheap to reproduce — one
+run of `samples.py` and five of `export_cycle.py` — and they have to be
+regenerated after the allowlist is populated anyway, so discard them:
+
+```bash
 git status --short                      # expect the artifacts, nothing else
 git checkout -- facts/vouchers/samples exports
-
-#    The four new sample files are untracked, so checkout does not touch
-#    them. Move them aside; the rewrite is about to remove the whole
-#    samples path from the tree.
 mkdir -p ~/redaction-scratch
 mv facts/vouchers/samples/2026-01-14-ACH.md \
    facts/vouchers/samples/2026-01-14-ASB.md \
    facts/vouchers/samples/2026-01-14-GF.md \
    facts/vouchers/samples/2026-02-11-GF.md ~/redaction-scratch/
-
 git status --short                      # must now print NOTHING
+```
 
-# 2. Remove both paths from every commit on this branch.
-FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --index-filter \
-  'git rm -r --cached --ignore-unmatch facts/vouchers/samples exports' \
+### 2. The rewrite
+
+```bash
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch \
+  --index-filter 'bash ~/redact-index-filter.sh' \
   --prune-empty 29557ed..claude/facts-vouchers
 
-# 3. Drop the rewrite's own backup ref. NOT the tag from step 0 — that one
-#    stays until the verification passes.
 git update-ref -d refs/original/refs/heads/claude/facts-vouchers
 ```
 
 Do **not** run `git reflog expire` / `git gc --prune=now` yet. Those destroy
-the old objects, and the tag from step 0 is only useful while they exist.
-Run them after the verification below passes and you are satisfied.
+the old objects, and the tag from step 1 is only useful while they exist.
 
-### Verification 1 — per commit, per file, by content
-
-This greps the *contents* of every tracked sample and export file in every
-commit for every withheld payee name, rather than trusting that the paths
-are gone. Names of six characters or fewer are excluded because they match
-inside ordinary words, which is the same filter `test_no_leaks.py` applies
-and for the same reason.
+### Verification 1 — artifacts gone, by content not by path
 
 ```bash
 cd ~/workspace/projects/ksd-vouchers
 
-# The name list comes from the worksheet, which is not in git.
 python3 - <<'PY' > /tmp/withheld-names.txt
 import csv
 names = {r['payee'].strip() for r in csv.DictReader(
@@ -450,8 +488,7 @@ for c in $(git rev-list 29557ed..claude/facts-vouchers); do
   hits=0
   for f in $files; do
     if git show "$c:$f" | grep -F -i -q -f /tmp/withheld-names.txt; then
-      hits=$((hits + 1))
-      echo "  LEAK  $(git log -1 --format=%h "$c")  $f"
+      hits=$((hits + 1)); echo "  LEAK  $(git log -1 --format=%h "$c")  $f"
     fi
   done
   printf '%s  artifacts=%-3s leaking=%s\n' \
@@ -459,46 +496,62 @@ for c in $(git rev-list 29557ed..claude/facts-vouchers); do
   [ "$hits" -eq 0 ] || fail=1
 done
 rm -f /tmp/withheld-names.txt
-
-if [ "$fail" -eq 0 ]; then
-  echo "VERIFIED: no tracked sample or export file in any commit contains a withheld payee name."
-else
-  echo "NOT CLEAN — the rewrite did not take. Restore with the tag; do not push."
-fi
+[ "$fail" -eq 0 ] && echo "VERIFIED: no tracked sample or export file in any commit contains a withheld payee name."
 ```
 
-**Before the rewrite this prints `artifacts=38` at the tip, `artifacts=24`
-for the four commits beneath it, and `leaking=` a non-zero number on most of
-them.** That is what it looks like when it has NOT been run — a run that
-prints `artifacts=0 leaking=0` everywhere and nothing else is the pass.
+Before the rewrite this prints `artifacts=38` for every commit from
+`7659f6d` up and `artifacts=24` for the four below it, with `leaking=` a
+non-zero number on most. **`artifacts=0 leaking=0` on every line is the
+pass.**
 
-### Verification 2 — the tag really can restore the old branch
+### Verification 2 — no individual's name in any commit, anywhere
 
-This proves the way back exists without undoing the rewrite:
+This is the new one, and it is the check that ruling 2 is actually enforced
+in history rather than only at the tip:
 
 ```bash
-# The tag still resolves to the exact commit the branch was at.
+cd ~/workspace/projects/ksd-vouchers
+grep -v '^#' ~/redaction-subs.tsv | cut -f1 > /tmp/individuals.txt
+
+fail=0
+for c in $(git rev-list 29557ed..claude/facts-vouchers); do
+  n=$(git grep -I -F -f /tmp/individuals.txt -l "$c" 2>/dev/null | wc -l)
+  printf '  %s  files-naming-an-individual=%s\n' "$(git log -1 --format=%h "$c")" "$n"
+  [ "$n" -eq 0 ] || fail=1
+done
+rm -f /tmp/individuals.txt
+[ "$fail" -eq 0 ] && echo "VERIFIED: no commit on this branch names an individual."
+```
+
+Every line must read `files-naming-an-individual=0`.
+
+### Verification 3 — the tag really can restore the old branch
+
+```bash
 test "$(git rev-parse pre-redaction-2026-09-16^{commit})" = "$PRE" \
   && echo "OK: the tag pins the pre-rewrite tip"
-
-# Its tree and every blob under it are still present in the object store.
 git cat-file -e "$PRE^{tree}" && echo "OK: the pre-rewrite tree is intact"
 git ls-tree -r --name-only "$PRE" -- facts/vouchers/samples exports | wc -l
 #   expect 38 — the artifacts still exist on the tag, which is the point
-
-# What the rewrite actually removed, as a diff you can read.
 git diff --stat pre-redaction-2026-09-16 claude/facts-vouchers | tail -5
 
 # The restore itself, IF you ever need it. Destroys the rewrite:
 #   git reset --hard pre-redaction-2026-09-16
 ```
 
-Once both verifications pass and you are satisfied:
+### Then, and only then
 
 ```bash
+cd facts/vouchers && VOUCHERS_DB_TRANSPORT=podman .venv/bin/python -m pytest -q -rs
+#   the rewrite changed test_parsers.py and test_payees.py in history but
+#   not at the tip, so this must still be 386 passed, 0 failed, 0 skipped
+
+cd ~/workspace/projects/ksd-vouchers
 git tag -d pre-redaction-2026-09-16
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
+rm -f ~/redaction-subs.tsv ~/redact_stream.py ~/redact-index-filter.sh
+rm -rf ~/redaction-scratch
 ```
 
 ### One more thing to keep out of git
@@ -555,19 +608,26 @@ line in the refresh plan.
 
 ## System state summary
 
-- **Database:** rebuilt and current. 459 sets, 482,395 lines, 13,306
-  vendors, 683 parse-log rows. 108 sets reconcile, up from 88. Schema and
-  views were applied on 2026-09-15 and are unchanged; `amount_paren` is now
-  populated — 1,388 rows across 86 sets. Nothing was written to the
-  database this session.
+- **Database:** holds the 2026-09-16 rebuild. 459 sets, 482,395 lines,
+  13,306 vendors, 683 parse-log rows. 108 sets reconcile, up from 88;
+  `amount_paren` populated on 1,388 rows across 86 sets. **Nothing was
+  written to the database this session**, and it is now one build behind the
+  code: the period work and the two new reason codes are in `build.py`,
+  `parsers.py` and `schema.sql` and not in the tables. `schema.sql` must be
+  re-applied before the next reload, because the reload writes rows the old
+  CHECK constraint rejects.
 - **Working tree:** clean except for the deliberately uncommitted
   artifacts — `facts/vouchers/samples/` (32 files, 4 new),
   `exports/` (10 files), and `reports/withheld-payees-2026-09-16.csv`.
-- **Tests:** 351 passed, 1 failed, **0 skipped**. The failure is
-  `test_no_leaks.py` and is Open items 1 and 2. Last session: 342 passed, 1
-  skipped — the skip was this same check.
-- **Fixtures:** 37 PASS, 0 FAIL, 0 BLOCKED, 24 REPORT. Both HARD hand sums
-  tie. R1's 35 HARD passes plus the two hand sums, which did not exist then.
+- **Tests:** **386 passed, 0 failed, 0 skipped.** Last session: 342 passed
+  and 1 skipped, the skip being the leak check; earlier today, 351 passed
+  and 1 failed, the failure being the same check once it could finally run.
+  It passes now.
+- **Fixtures:** 37 PASS, **1 FAIL**, 0 BLOCKED, 24 REPORT. Both HARD hand
+  sums tie. The one failure is `contract_period_invariant`, new today,
+  reporting truthfully that the database still holds the pre-ruling build:
+  two sets have a period ending before it begins and neither yet carries
+  `PERIOD_INVALID_AT_SOURCE`. **It passes after `build.py --reload`.**
 - **Pre-commit:** ran on the commit — `ruff`, `ruff-format`, `bandit`,
   `interrogate`, `gitleaks`, `detect-private-key` and the file hygiene
   hooks. No hook was disabled or bypassed and no `--no-verify` was used.
@@ -575,10 +635,13 @@ line in the refresh plan.
   `.env` was read. All database access went through
   `podman exec -i boarddocs-postgres psql`, directly or through the
   read-only transport.
-- **Scratch:** `facts/vouchers/_build/` is gitignored and holds the
-  operator's rebuild logs plus this session's `fixtures_2026-09-16.txt`,
-  `leak_triage.py`, `leak_triage2.py` and their JSON output. The triage
-  JSON contains payee names and stays out of git with the rest of `_build`.
+- **Scratch:** `facts/vouchers/_build/` is gitignored. It holds the
+  operator's rebuild logs, this session's `dryrun_2026-09-16.log`, the
+  leak-triage scripts and their JSON, and three files the next steps need:
+  **`redaction-subs.tsv`** (49 name substitutions for the rewrite),
+  **`redact_stream.py`** (the filter that applies them) and
+  **`payee_fixture_map.txt`** (hash-to-name lookup for `test_payees.py`).
+  All three contain or resolve individuals' names and must stay out of git.
 
 ## Rulings of 2026-09-16 — decisions and what changed
 
@@ -655,11 +718,20 @@ gone the other way.
 
 ## Next session starts at
 
-Whichever of the operator's five steps above is next. If the rewrite has
-been run, start by re-running Verification 1 before anything else — it is
-cheap, and a rewrite that half-took is worse than one that did not.
+Whichever of the operator's steps is next, in the order in "What the
+operator must do next".
 
-If C3 has been ruled on, the work is: implement the ruling in
-`samples.py`/`export_cycle.py`, apply the three `test_no_leaks.py` patches
-from the report, regenerate, and confirm the suite is 0 failed and 0
-skipped.
+**If the rewrite has been run**, start by re-running Verifications 1 and 2
+before anything else. They are cheap, and a rewrite that half-took is worse
+than one that did not. Verification 2 is the new one and the one that
+matters most: every commit must report
+`files-naming-an-individual=0`.
+
+**If the reload has been run**, confirm `fixtures.py` reports 38 PASS / 0
+FAIL, and confirm the 12 expected reason-code changes and no others —
+`build.py --dry-run` produced that list today and the comparison method is
+in the report.
+
+**If the allowlist has been populated**, regenerate samples and exports,
+confirm `test_no_leaks.py` still passes, and commit the artifacts. That is
+the last blocker before fast-forward.

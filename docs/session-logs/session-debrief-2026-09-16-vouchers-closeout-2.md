@@ -274,24 +274,40 @@ payees first, and put the organizations you want published into
 12,578 — are the cost of the specified rule in one screen.
 
 **4. ~~Rule on C3 and fix the leak test.~~ DONE — both are built and the
-leak check passes.** Replaced by: **re-run `build.py --reload`**, which needs
-the credential from `ksd-main/.env`. The period fix is in the code and not in
-the tables, and `fixtures.py` reports 1 FAIL until it runs:
+leak check passes.** Replaced by: **run `_build/rebuild2.sh`**, the second
+reload. Written this session, **not run**, same shape as the `rebuild.sh`
+you ran on 2026-09-16 — schema, dry run, STOP check, and only then a write.
 
 ```bash
 cd ~/workspace/projects/ksd-vouchers/facts/vouchers
-# credential in the environment; the reload writes
-podman exec -i boarddocs-postgres psql -U boarddocs -d boarddocs -v ON_ERROR_STOP=1 -f - < schema.sql
-.venv/bin/python build.py --reload --progress
-VOUCHERS_DB_TRANSPORT=podman .venv/bin/python fixtures.py   # expect 38 PASS / 0 FAIL
+bash _build/rebuild2.sh
 ```
 
-`schema.sql` must be applied first — it carries the two new reason codes, and
-the reload writes rows that the old CHECK constraint would reject. Both the
-schema file and the reload are idempotent. Expect exactly 12 sets to gain a
-period reason code and **no dollar figure, line count or reconciliation
-status to move**; that is already verified by dry run and the comparison is
-in the report.
+What it does, in order, and what each step refuses on:
+
+| Step | Refuses if |
+|---|---|
+| applies `schema.sql` | it errors — the reload writes rows the OLD CHECK constraint rejects, so this must go first |
+| `build.py --dry-run` | the parse fails |
+| STOP check vs `_build/baseline-sets-before-rebuild2.psv` | the baseline does not hold exactly **108** reconciling sets, or the dry run reconciles anything other than 108, or any of those 108 stops |
+| `build.py --reload` | the load fails |
+| re-check against the tables | any of the 108 stopped reconciling |
+| `_build/compare_sets.py` | **any** dollar figure, line count or reconciliation status moved, or the reason-code changes are not exactly **12** |
+| `fixtures.py` | the suite does not report `FAIL 0` |
+
+The baseline was captured from the live tables this session —
+`sha256 e1c98661…`, 459 sets, 108 reconciling — so the STOP check compares
+against what is really there rather than against a prediction. The
+`108` assertion exists for the reason the first rebuild recorded: a
+comparison that matches zero rows on both sides prints nothing and reads
+exactly like a pass.
+
+`compare_sets.py` compares money as `Decimal`, never as text. That is not
+fussiness — a first attempt at this comparison during the session reported
+ten changed dollar figures that were all `0` against `0.00`. The gate was
+pre-flighted against the dry run and was tested in both directions: it
+returns 0 on the expected outcome and 1 when a dollar figure is nudged by a
+cent or the reason-code count is off by one.
 
 **5. Regenerate and commit the artifacts.**
 
@@ -549,6 +565,114 @@ git diff --stat pre-redaction-2026-09-16 claude/facts-vouchers | tail -5
 #   git reset --hard pre-redaction-2026-09-16
 ```
 
+### Verification 4 — the content rewrite changed the 49 substitutions and nothing else
+
+Verification 2 proves no individual's name survives. It does **not** prove
+the filter left everything else alone — a substitution script that also
+mangled an unrelated line would pass it. This one closes that gap, and it is
+the check that makes the content rewrite safe to accept.
+
+The method is stronger than reading a diff: for every commit and every one of
+the seven rewritten paths, take the **original** blob from the safety tag's
+history, pipe it through the same filter, and require the result to be
+**byte-identical** to what is in the rewritten commit. Anything the filter
+did that the substitution set does not account for shows up as a mismatch.
+
+Commits are paired by subject line, which is unique across all of them
+(checked: `git log --format=%s | sort | uniq -d` prints nothing), so the
+pairing survives even if `--prune-empty` were to drop one. It will not —
+no commit on this branch touches only the artifact paths.
+
+```bash
+cd ~/workspace/projects/ksd-vouchers
+export REDACTION_SUBS=~/redaction-subs.tsv
+
+PATHS="facts/vouchers/vendors.py
+facts/vouchers/test_parsers.py
+facts/vouchers/test_payees.py
+docs/session-logs/session-debrief-2026-09-15-vouchers-closeout.md
+reports/facts-vouchers-recon-2026-09-14.md
+reports/vouchers-closeout-2026-09-15.md
+reports/vouchers-r1-2026-09-15.md"
+
+fail=0; checked=0; rewritten=0
+for new in $(git rev-list 29557ed..claude/facts-vouchers); do
+  subject=$(git log -1 --format=%s "$new")
+  old=$(git log --format='%H %s' 29557ed..pre-redaction-2026-09-16 \
+        | grep -F -- "$subject" | head -1 | cut -d' ' -f1)
+  if [ -z "$old" ]; then
+    echo "  UNPAIRED: $(git log -1 --format=%h "$new")  $subject"; fail=1; continue
+  fi
+  for f in $PATHS; do
+    git cat-file -e "$old:$f" 2>/dev/null || continue
+    checked=$((checked + 1))
+    git show "$old:$f" | python3 "$HOME/redact_stream.py" > /tmp/expected.blob
+    git show "$new:$f" > /tmp/actual.blob
+    if cmp -s /tmp/expected.blob /tmp/actual.blob; then
+      if ! cmp -s <(git show "$old:$f") /tmp/actual.blob; then
+        rewritten=$((rewritten + 1))
+      fi
+    else
+      echo "  MISMATCH  $(git log -1 --format=%h "$new")  $f"
+      diff <(git show "$old:$f") /tmp/actual.blob | head -20
+      fail=1
+    fi
+  done
+done
+rm -f /tmp/expected.blob /tmp/actual.blob
+
+echo "checked $checked file-versions; $rewritten of them were rewritten"
+[ "$fail" -eq 0 ] && echo "VERIFIED: every rewritten file differs from its original by the substitutions and by nothing else."
+```
+
+**Expect `checked=67` and `rewritten=46`** at the time of writing — the
+seven paths do not all exist in all twelve commits, and `HEAD` was already
+clean so its files pass unchanged. What matters is that **`MISMATCH` never
+prints**. A mismatch means the filter did something the substitution set
+does not explain; do not proceed, and restore from the tag.
+
+### Verification 5 — the substitution file is gone
+
+The substitution set is 49 individuals' names. It has done its job the moment
+Verification 4 passes, and from then on it is only a liability sitting in the
+working tree. Delete it and prove it is gone — **after** Verifications 1
+through 4, never before, because every one of them needs it.
+
+```bash
+cd ~/workspace/projects/ksd-vouchers
+
+rm -f facts/vouchers/_build/redaction-subs.tsv \
+      ~/redaction-subs.tsv \
+      ~/redact-index-filter.sh \
+      ~/redact_stream.py
+
+# 1. The files themselves are gone.
+for f in facts/vouchers/_build/redaction-subs.tsv ~/redaction-subs.tsv \
+         ~/redact-index-filter.sh ~/redact_stream.py; do
+  if [ -e "$f" ]; then echo "  STILL PRESENT: $f"; else echo "  gone: $f"; fi
+done
+
+# 2. Nothing anywhere under _build/ still holds the substitution table.
+#    redact_stream.py is a copy of the one in _build; that copy goes too.
+rm -f facts/vouchers/_build/redact_stream.py \
+      facts/vouchers/_build/make_redaction_subs.py
+grep -rl "individual payee, name withheld" facts/vouchers/_build/ 2>/dev/null \
+  && echo "  ^ these still reference the substitution set -- read them and decide" \
+  || echo "  gone: no file under _build/ references the substitution set"
+
+# 3. It was never in git, and is not now.
+git log --all --oneline -- '*redaction-subs*' | head -1
+git ls-files --error-unmatch facts/vouchers/_build/redaction-subs.tsv 2>&1 | head -1
+#   both must report that git has never heard of it
+```
+
+**What is deliberately NOT deleted:** `_build/payee_fixture_map.txt`. That is
+the hash-to-name lookup for `test_payees.py`, and it is how a failing fixture
+is traced back to the payee it identifies. It is gitignored, it is
+regenerable with `python test_payees.py`, and it is the operator's working
+tool rather than a leftover. Delete it too if you would rather regenerate it
+on demand — nothing depends on it existing.
+
 ### Then, and only then
 
 ```bash
@@ -652,6 +776,9 @@ line in the refresh plan.
   **`redact_stream.py`** (the filter that applies them) and
   **`payee_fixture_map.txt`** (hash-to-name lookup for `test_payees.py`).
   All three contain or resolve individuals' names and must stay out of git.
+  It also holds the second reload, written and **not run**:
+  **`rebuild2.sh`**, **`compare_sets.py`**, and the baseline it gates on,
+  **`baseline-sets-before-rebuild2.psv`**.
 
 ## Rulings of 2026-09-16 — decisions and what changed
 

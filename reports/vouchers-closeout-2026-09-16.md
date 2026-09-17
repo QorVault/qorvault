@@ -987,3 +987,116 @@ still needs the password from `ksd-main/.env`.
    Two sets (`2017-03-22:ASB`, `2017-04-26:ASB`) therefore lose an invented
    period with no code recording it; the note on the set says so, but a query
    on `reason_code` will not find them. *Urgency:* low.
+
+---
+
+# Additions of 2026-09-16 — the second reload, and two more verifications
+
+Both written, **neither run**. The operator runs the rewrite, then
+`rebuild2.sh`.
+
+## `_build/rebuild2.sh` — the second reload
+
+Same shape as the `rebuild.sh` that produced the first one: apply the
+schema, dry run, gate, and only then write. Every step that can refuse
+refuses **before** the reload rather than after it.
+
+**Schema first, and why it cannot be second.** `facts.voucher_set.reason_code`
+and `facts.voucher_parse_log.status` both carry CHECK constraints listing the
+permitted values, and neither list in the running database contains
+`PERIOD_INVALID_AT_SOURCE` or `PERIOD_NOT_STATED`. Reloading first and
+migrating afterwards fails part-way through a write. `schema.sql` is
+idempotent by construction — `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+EXISTS`, `CREATE INDEX IF NOT EXISTS`, and constraints re-stated inside a
+`DO` block that does `DROP CONSTRAINT IF EXISTS` before `ADD CONSTRAINT`, so
+re-running replaces a constraint rather than colliding with it. `views.sql`
+is unchanged since 2026-09-15 and is deliberately not re-applied.
+
+**The baseline is new and was captured from the live tables this session**,
+not predicted:
+
+| | |
+|---|---|
+| file | `_build/baseline-sets-before-rebuild2.psv` |
+| sha256 | `e1c98661383f2fa3699c246634c71cbe6f6b5f8cd666887e15caf065b1637c86` |
+| sets | 459 |
+| reconciling | **108** |
+
+The count is asserted before the comparison runs, and the dry run's count is
+asserted too. That guard exists because of the failure the first rebuild
+documented: a comparison that matches zero rows on **both** sides prints
+nothing and reads exactly like a pass.
+
+**What it asserts after the write:**
+
+```
+459 sets, membership unchanged
+108 reconciling, none of the original 108 stopped
+ 12 reason codes changed   (11 -> PERIOD_NOT_STATED, 1 -> PERIOD_INVALID_AT_SOURCE)
+  0 dollar figures changed
+  0 line counts changed
+  0 reconciliation statuses changed
+fixtures.py reports FAIL 0
+```
+
+Anything else and it exits non-zero with the rows printed.
+
+**`_build/compare_sets.py` does the classification, and it compares money as
+`Decimal`.** This is the one piece of the script that is not obvious and it
+is not fussiness: the first attempt at exactly this comparison during the
+session reported **ten changed dollar figures that were all `0` against
+`0.00`** — the dry-run log renders a zero Decimal one way and the database
+stores it another. Comparing rendered strings would have reported a ten-set
+money change that does not exist, on a script whose entire job is to notice
+a money change.
+
+**Pre-flighted, both directions.** The expectation was checked against the
+2026-09-16 dry run before being written into the script:
+
+```
+DOLLAR FIGURES changed (Decimal comparison): 0
+LINE COUNTS changed: 0
+RECONCILIATION STATUS changed: 0
+REASON CODES changed: 12
+OK: every difference is one that was expected.        exit=0
+```
+
+and the gate was tested failing, because a gate that cannot fail is not a
+gate: nudging one parsed total by a cent gives `exit=1`, and asking it to
+expect 11 reason-code changes instead of 12 gives `exit=1`.
+
+`bash -n` parses the script clean. It has not been executed.
+
+## Verification 4 — the content rewrite changed 49 substitutions and nothing else
+
+Verification 2 proves no individual's name survives the rewrite. It does not
+prove the filter left everything else alone — a substitution script that also
+mangled an unrelated line would pass it.
+
+The method is stronger than reading a diff: for every commit and every one of
+the seven rewritten paths, take the **original** blob from the safety tag's
+history, pipe it through the same filter, and require the result to be
+**byte-identical** to the rewritten commit's blob. Anything the filter did
+that the substitution set does not explain shows up as a `MISMATCH`.
+
+Commits pair by subject line, which is unique across all twelve
+(`git log --format=%s | sort | uniq -d` prints nothing). The pairing would
+survive `--prune-empty` dropping a commit — it will not drop one, because no
+commit on this branch touches only the artifact paths, and that was checked.
+
+**Expected: `checked=67`, `rewritten=46`, and `MISMATCH` never printed.**
+Both counts were computed against the current history rather than guessed.
+
+## Verification 5 — the substitution file is gone
+
+49 individuals' names, useful only until Verification 4 passes and a
+liability afterwards. Deleted **after** Verifications 1–4, never before,
+because every one of them needs it. Three proofs: the files are gone, nothing
+left under `_build/` still carries the substitution table, and git has never
+heard of any of them.
+
+`_build/payee_fixture_map.txt` is deliberately **kept** — it is the
+hash-to-name lookup that lets a failing `test_payees.py` fixture be traced
+back to the payee it identifies, it is gitignored, and it regenerates with
+`python test_payees.py`. Delete it too if you would rather regenerate on
+demand; nothing depends on it existing.

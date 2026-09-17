@@ -84,3 +84,6 @@ logs/sessions/
 
 # RAG API runtime log
 rag-api.log
+
+# Withheld-payee worksheets. Individual names; never committed.
+reports/withheld-payees-*.csv

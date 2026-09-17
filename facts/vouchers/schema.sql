@@ -85,11 +85,19 @@ CREATE TABLE IF NOT EXISTS facts.voucher_set (
 
     reconciled               boolean,
     delta                    numeric(14,2),
+    -- TOTAL_INCONSISTENT_AT_SOURCE is deliberately not OUT_OF_BALANCE.
+    -- OUT_OF_BALANCE says the parse and the document disagree and the parse
+    -- is the thing to go and check. This code says the document disagrees
+    -- with itself -- its printed TOTAL cannot be produced by the rows
+    -- printed beneath it under any reading of them. Filing the two under
+    -- one code would send an auditor to re-read a parse that is correct,
+    -- and would hide a class of finding the board is entitled to see.
     reason_code              text
         CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS',
                                'TOTAL_NOT_FOUND', 'NO_TEXT_LAYER',
                                'REGEX_MISS', 'DUPLICATE_SET',
-                               'COLUMN_AMBIGUOUS', 'OTHER')),
+                               'COLUMN_AMBIGUOUS',
+                               'TOTAL_INCONSISTENT_AT_SOURCE', 'OTHER')),
     notes                    text,
 
     source                   text NOT NULL
@@ -288,6 +296,21 @@ ALTER TABLE facts.voucher_line
     ADD COLUMN IF NOT EXISTS reason_detail text,
     ADD COLUMN IF NOT EXISTS regex_verdict text;
 
+-- ---------------------------------------------------- close-out migration --
+-- Parentheses around an amount are accounting notation for a negative
+-- number. Recording WHICH rows are written that way, rather than only the
+-- resulting sign, is what lets the operator ask a later question -- "show me
+-- every row whose sign came from a bracket" -- without re-reading 459 PDFs.
+-- The sign itself lives in check_amount / invoice_amount as it always has.
+ALTER TABLE facts.voucher_line
+    ADD COLUMN IF NOT EXISTS amount_paren boolean NOT NULL DEFAULT false;
+
+COMMENT ON COLUMN facts.voucher_line.amount_paren IS
+    'The amount column was printed in parentheses, i.e. the sign is from accounting notation.';
+
+CREATE INDEX IF NOT EXISTS idx_vline_paren ON facts.voucher_line(set_id)
+    WHERE amount_paren;
+
 ALTER TABLE facts.voucher_parse_log
     ADD COLUMN IF NOT EXISTS grid_schema    text,
     ADD COLUMN IF NOT EXISTS grid_method    text,
@@ -311,11 +334,13 @@ BEGIN
     ALTER TABLE facts.voucher_set ADD CONSTRAINT voucher_set_reason_code_check
         CHECK (reason_code IN ('OUT_OF_BALANCE', 'MULTIPLE_TOTALS', 'TOTAL_NOT_FOUND',
                                'NO_TEXT_LAYER', 'REGEX_MISS', 'DUPLICATE_SET',
-                               'COLUMN_AMBIGUOUS', 'OTHER'));
+                               'COLUMN_AMBIGUOUS', 'TOTAL_INCONSISTENT_AT_SOURCE',
+                               'OTHER'));
     ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_status_check
         CHECK (status IN ('parsed', 'no_text_layer', 'unreadable', 'era_unmatched',
                           'regex_miss', 'total_not_found', 'out_of_balance',
-                          'column_ambiguous', 'skipped'));
+                          'column_ambiguous', 'total_inconsistent_at_source',
+                          'skipped'));
     ALTER TABLE facts.voucher_parse_log ADD CONSTRAINT voucher_parse_log_grid_method_check
         CHECK (grid_method IN ('runs', 'header_band'));
 END $$;

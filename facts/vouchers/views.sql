@@ -259,6 +259,18 @@ COMMENT ON VIEW facts.register_crosschecks IS
 --
 -- Rows that could not be read are excluded from the key: a row with a
 -- reason code has no reliable check number to deduplicate on.
+--
+-- Sentinel numbers are excluded too, and for a sharper reason. A number
+-- that is all one digit, or that carries a run of eight or more identical
+-- digits, is not a warrant identifier: the accounting system emits it for
+-- entries that have no warrant. Three such numbers are in this corpus --
+-- 8888888888 and the pair 8888888898 / 8888888899. Keeping them in the key
+-- would merge unrelated payments that happen to share a placeholder and
+-- would delete real money from a cross-cycle total. Excluded from the key,
+-- every sentinel row is its own payment and is always counted: the LEFT
+-- JOIN below finds no first-cycle row for it, and is_first_cycle_for_check
+-- is therefore true. This predicate is the SQL twin of is_sentinel_check()
+-- in build.py; the two must say the same thing.
 
 -- ------------------------------------------------------ check_first_cycle --
 CREATE OR REPLACE VIEW facts.check_first_cycle AS
@@ -271,6 +283,8 @@ FROM facts.voucher_line l
 JOIN facts.voucher_set  s ON s.set_id = l.set_id
 WHERE l.check_number IS NOT NULL
   AND l.reason_code IS NULL
+  AND l.check_number !~ '^(.)\1*$'
+  AND l.check_number !~ '(.)\1{7,}'
 ORDER BY s.fund, l.check_number, s.meeting_date, s.set_id;
 
 COMMENT ON VIEW facts.check_first_cycle IS

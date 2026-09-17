@@ -57,12 +57,40 @@ AMOUNT_BODY = r"-?\$?\s?-?[\d, ]*\.?\d+-?"
 GROUPING_RX = re.compile(r"^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$")
 
 
+def _strip_amount_wrapper(raw: str) -> tuple[str, bool, bool]:
+    """Remove currency decoration and report how the sign was written.
+
+    Args:
+        raw: Amount as printed.
+
+    Returns:
+        ``(digits, negative, parenthesised)``.
+    """
+    cleaned = raw.replace(" ", "").replace("$", "")
+    parenthesised = len(cleaned) > 2 and cleaned.startswith("(") and cleaned.endswith(")")
+    if parenthesised:
+        cleaned = cleaned[1:-1]
+    negative = parenthesised or cleaned.startswith("-") or cleaned.endswith("-")
+    return cleaned.strip("-"), negative, parenthesised
+
+
 def money(raw: str | None) -> Decimal | None:
     """Parse a printed amount into an exact Decimal.
 
-    Handles the three ways this corpus writes a negative number -- a leading
-    minus, a minus after the dollar sign, and a trailing minus -- and the
-    pdfplumber layout artifact that splits a number with a space.
+    Handles the four ways this corpus writes a negative number -- a leading
+    minus, a minus after the dollar sign, a trailing minus, and parentheses
+    enclosing the figure -- and the pdfplumber layout artifact that splits a
+    number with a space.
+
+    Parentheses are accounting notation for a negative amount and are read
+    that way **only here**, in the amount columns and the TOTAL line.
+    Parentheses in a description are text and never reach this function: a
+    description is passed through :func:`_clean`, not through ``money``. That
+    separation is the whole safety argument for the rule -- "(see PO 4412)"
+    in a description cannot change a figure.
+
+    Whether a set is allowed to adopt the reading is decided per set by the
+    caller, against the printed TOTAL.
 
     A value whose thousands separators do not group into threes is rejected
     rather than returned, because in this corpus that always means the
@@ -77,9 +105,7 @@ def money(raw: str | None) -> Decimal | None:
     """
     if raw is None:
         return None
-    cleaned = raw.replace(" ", "").replace("$", "")
-    negative = cleaned.startswith("-") or cleaned.endswith("-")
-    cleaned = cleaned.strip("-")
+    cleaned, negative, _ = _strip_amount_wrapper(raw)
     if not cleaned or cleaned == "." or not GROUPING_RX.match(cleaned):
         return None
     try:
@@ -87,6 +113,25 @@ def money(raw: str | None) -> Decimal | None:
     except InvalidOperation:
         return None
     return -value if negative else value
+
+
+def is_parenthesised_amount(raw: str | None) -> bool:
+    """Whether a cell holds an amount written in parentheses.
+
+    Reported per row so a set can be asked how much of its money is written
+    this way, and so the operator can see every such row without re-reading
+    the PDFs.
+
+    Args:
+        raw: Cell text as printed.
+
+    Returns:
+        True when the text is a well-formed amount wrapped in parentheses.
+    """
+    if raw is None:
+        return False
+    cleaned, _, parenthesised = _strip_amount_wrapper(raw)
+    return parenthesised and bool(cleaned) and bool(GROUPING_RX.match(cleaned))
 
 
 def money_tail(raw: str | None) -> Decimal | None:
@@ -268,6 +313,9 @@ class Row:
         reason_detail: What specifically could not be read.
         regex_verdict: ``agree``, ``disagree`` or ``regex_miss`` from the
             retired regex path, kept as a per-line cross-check only.
+        amount_paren: True when either amount column was printed in
+            parentheses, i.e. this row's sign comes from the accounting
+            notation rather than from a minus sign.
     """
 
     vendor_raw: str
@@ -282,6 +330,7 @@ class Row:
     reason_code: str | None = None
     reason_detail: str | None = None
     regex_verdict: str | None = None
+    amount_paren: bool = False
 
 
 @dataclass
@@ -579,14 +628,18 @@ def read_cells(cells, keys: tuple[str, ...]) -> tuple[Row | None, list[str]]:
         else:
             problems.append(f"the check number column holds {raw!r}, which is not a check number")
 
-    invoice = money(cells.get("invoice_amount"))
+    invoice_raw = cells.get("invoice_amount")
+    invoice = money(invoice_raw)
     if invoice is None:
-        problems.append(f"the invoice amount column holds {cells.get('invoice_amount')!r}, which is not an amount")
+        problems.append(f"the invoice amount column holds {invoice_raw!r}, which is not an amount")
+    paren = is_parenthesised_amount(invoice_raw)
 
     if "check_amount" in keys:
-        check_amount = money(cells.get("check_amount"))
+        check_raw = cells.get("check_amount")
+        check_amount = money(check_raw)
         if check_amount is None:
-            problems.append(f"the check amount column holds {cells.get('check_amount')!r}, which is not an amount")
+            problems.append(f"the check amount column holds {check_raw!r}, which is not an amount")
+        paren = paren or is_parenthesised_amount(check_raw)
     else:
         # Era A prints one amount. Saying the check total differs from the
         # invoice total would invent a distinction the document does not
@@ -603,6 +656,7 @@ def read_cells(cells, keys: tuple[str, ...]) -> tuple[Row | None, list[str]]:
         char_offset=0,
         char_end=0,
         line_text="",
+        amount_paren=paren,
     )
     return row, problems
 

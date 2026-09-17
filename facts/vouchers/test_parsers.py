@@ -479,11 +479,24 @@ class TestVendorRules:
 
     @pytest.mark.parametrize(
         "raw",
-        ["Amazon Capital Services", "JW Pepper & Son Inc", "KCDA", "Micro Computer Systems Inc"],
+        ["Amazon Capital Services", "JW Pepper & Son Inc", "Micro Computer Systems Inc"],
     )
     def test_organizations_are_exportable(self, raw):
-        """Names that positively identify as organizations may be published."""
+        """Names carrying a business marker may be published."""
         assert is_exportable(raw)
+
+    def test_a_bare_acronym_is_no_longer_exportable(self):
+        """KCDA is a purchasing cooperative and is now withheld.
+
+        The classifier is a marker list, and a bare acronym carries no
+        marker. The old rule published any single all-caps token; 116
+        payees in this corpus qualified that way. Withholding them is the
+        safe direction and is what the specified rule does, but it is a
+        real loss of context and is raised for the operator in the
+        close-out report rather than quietly restored here.
+        """
+        assert not is_exportable("KCDA")
+        assert is_exportable("KCDA", frozenset({normalize_vendor("KCDA")}))
 
     def test_watch_list_overrides(self):
         """A watch-list name is published because the operator chose it.
@@ -524,14 +537,21 @@ def _set(set_id: str, lines: list[dict], stated: Decimal | None, extra=None) -> 
     return row
 
 
-def _line(number: str, check: str, invoice: str, reason: str | None = None) -> dict:
+def _line(number: str, check: str, invoice: str, reason: str | None = None, paren: bool = False) -> dict:
     """Build a minimal line dict.
+
+    Check numbers here are six digits because that is what this corpus
+    prints: ``CHECK_NUMBER_RX`` accepts five to eleven. The earlier
+    fixtures used ``"1"`` and ``"2"``, which the sentinel rule now reads as
+    all-one-digit placeholders -- correctly, and only because the fixture
+    was never a shape the documents produce.
 
     Args:
         number: Check number.
         check: Check amount.
         invoice: Invoice amount.
         reason: Row-level reason code, when the row could not be read.
+        paren: Whether the amount was printed in parentheses.
 
     Returns:
         A line dict with the fields summarize reads.
@@ -541,6 +561,8 @@ def _line(number: str, check: str, invoice: str, reason: str | None = None) -> d
         "check_amount": Decimal(check),
         "invoice_amount": Decimal(invoice),
         "reason_code": reason,
+        "reason_detail": None,
+        "amount_paren": paren,
     }
 
 
@@ -549,7 +571,7 @@ class TestSummarize:
 
     def test_reconciles(self):
         """Lines summing to the stated total, to the cent."""
-        row = _set("s", [_line("1", "10.00", "6.00"), _line("1", "10.00", "4.00")], Decimal("10.00"))
+        row = _set("s", [_line("607001", "10.00", "6.00"), _line("607001", "10.00", "4.00")], Decimal("10.00"))
         summarize(row)
         assert row.reconciled is True
         assert row.delta == Decimal("0")
@@ -559,7 +581,7 @@ class TestSummarize:
 
     def test_out_of_balance_is_false_with_a_reason(self):
         """A real disagreement is false, with a delta and a reason."""
-        row = _set("s", [_line("1", "10.00", "9.00")], Decimal("10.00"))
+        row = _set("s", [_line("607001", "10.00", "9.00")], Decimal("10.00"))
         summarize(row)
         assert row.reconciled is False
         assert row.delta == Decimal("-1.00")
@@ -571,7 +593,7 @@ class TestSummarize:
         Marking them false would assert the district's arithmetic is wrong
         when what is true is that the document states no arithmetic.
         """
-        row = _set("s", [_line("1", "10.00", "10.00")], None)
+        row = _set("s", [_line("607001", "10.00", "10.00")], None)
         summarize(row)
         assert row.reconciled is None
         assert row.reason_code == "TOTAL_NOT_FOUND"
@@ -584,7 +606,7 @@ class TestSummarize:
         """
         row = _set(
             "s",
-            [_line("1", "10.00", "6.00"), _line("2", "99.00", "99.00", reason="COLUMN_AMBIGUOUS")],
+            [_line("607001", "10.00", "6.00"), _line("607002", "99.00", "99.00", reason="COLUMN_AMBIGUOUS")],
             Decimal("6.00"),
         )
         summarize(row)
@@ -596,7 +618,7 @@ class TestSummarize:
 
     def test_a_set_whose_every_row_is_unread_is_flagged(self):
         """Zero readable rows is not a reconciled set at zero."""
-        row = _set("s", [_line("1", "10.00", "10.00", reason="COLUMN_AMBIGUOUS")], Decimal("10.00"))
+        row = _set("s", [_line("607001", "10.00", "10.00", reason="COLUMN_AMBIGUOUS")], Decimal("10.00"))
         summarize(row)
         assert row.reconciled is False
         assert row.reason_code == "COLUMN_AMBIGUOUS"
@@ -612,7 +634,7 @@ class TestSummarize:
         """An extra TOTAL page is only a reason code when the choice fails."""
         good = _set(
             "s",
-            [_line("1", "10.00", "10.00")],
+            [_line("607001", "10.00", "10.00")],
             Decimal("10.00"),
             extra=[("TOTAL", Decimal("20.00"), 999)],
         )
@@ -623,7 +645,7 @@ class TestSummarize:
 
         bad = _set(
             "s",
-            [_line("1", "10.00", "9.00")],
+            [_line("607001", "10.00", "9.00")],
             Decimal("10.00"),
             extra=[("TOTAL", Decimal("20.00"), 999)],
         )
@@ -673,9 +695,9 @@ class TestCumulative:
                 self.meeting_date = meeting_date
 
         gf = SetRow("gf", FakeArtifact("2021-02-10"), ParsedListing(era="C"), fund="GF")
-        gf.lines = [_line("1001", "1.00", "1.00")]
+        gf.lines = [_line("601001", "1.00", "1.00")]
         asb = SetRow("asb", FakeArtifact("2021-03-10"), ParsedListing(era="C"), fund="ASB")
-        asb.lines = [_line("1001", "1.00", "1.00")]
+        asb.lines = [_line("601001", "1.00", "1.00")]
         mark_cumulative([gf, asb])
         assert not gf.notes
         assert not asb.notes

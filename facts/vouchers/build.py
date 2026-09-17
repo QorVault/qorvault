@@ -25,6 +25,7 @@ No LLM is involved in any amount, date, vendor, check-number or total path.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -48,7 +49,38 @@ PAYROLL_PREFIX = "530"
 # A check number this corpus uses as a sentinel for a credit rather than as
 # an actual warrant. Confirmed on 2026-05-27 ACH: check 8888888888,
 # Electrocom Inc, six rows summing to zero invoice against -$2,887.19.
+#
+# This set drives is_credit ONLY, and is deliberately still a literal set.
+# Widening it to the pattern below would newly mark 8888888898 and
+# 8888888899 -- two positive Dept of Revenue AP source invoices on
+# 2025-02-26 GF -- as credits, which they are not.
 SENTINEL_CHECK_NUMBERS = {"8888888888", "9999999999"}
+
+# What counts as a sentinel for the purposes of the DEDUPE KEY: a number
+# that is all one digit, or that carries a run of eight or more identical
+# digits. Three numbers in the corpus match -- 8888888888 (six rows) and
+# 8888888898 / 8888888899 (one row each) -- and a literal set of two would
+# have missed the latter pair. They are not warrant identifiers: the
+# accounting system emits them for entries that have no warrant, so the same
+# number can be reused for unrelated payments in unrelated cycles.
+#
+# Separate from SENTINEL_CHECK_NUMBERS on purpose. "Not a warrant
+# identifier" and "is a credit" are different claims about a row, and the
+# 2025-02-26 pair is the proof: sentinel-shaped and positive.
+SENTINEL_CHECK_RX = re.compile(r"^(\d)\1*$|(\d)\2{7,}")
+
+
+def is_sentinel_check(number: str | None) -> bool:
+    """Whether a check number is a sentinel rather than a warrant identifier.
+
+    Args:
+        number: Check number as printed, or None.
+
+    Returns:
+        True when the number is all one digit or carries a run of eight or
+        more identical digits.
+    """
+    return bool(number) and bool(SENTINEL_CHECK_RX.search(number))
 
 
 @dataclass
@@ -79,6 +111,11 @@ class SetRow:
     fund: str | None = None
     stated_total_page: int | None = None
     unread_lines: int = 0
+    # Phase 1 measurements, reported per set rather than recomputed later.
+    paren_rows: int = 0
+    paren_total: Decimal = Decimal("0")
+    paren_rows_held: int = 0
+    sentinel_rows: int = 0
 
 
 def choose_fund(artifact, parsed: ParsedListing, first_page: str) -> tuple[str | None, str | None]:
@@ -134,6 +171,7 @@ def build_lines(set_id: str, artifact, parsed: ParsedListing, pdf: PdfText) -> l
                 "is_person_shaped": is_person_shaped(row.vendor_raw),
                 "is_credit": (row.invoice_amount is not None and row.invoice_amount < 0)
                 or number in SENTINEL_CHECK_NUMBERS,
+                "amount_paren": row.amount_paren,
                 "reason_code": row.reason_code,
                 "reason_detail": row.reason_detail,
                 "regex_verdict": row.regex_verdict,
@@ -149,6 +187,73 @@ def build_lines(set_id: str, artifact, parsed: ParsedListing, pdf: PdfText) -> l
     return out
 
 
+def dedupe_key(number: str | None) -> str | None:
+    """Return the key a check number contributes to a dedupe, or None.
+
+    A sentinel number is not a warrant identifier. ``8888888888`` is used by
+    this corpus to mark a credit and ``9999999999`` likewise, so the same
+    sentinel appears on unrelated payments in unrelated cycles. Collapsing
+    them on ``(fund, check_number)`` would merge payments that have nothing
+    to do with each other and would silently remove real money from a
+    cross-cycle total. Sentinels are therefore excluded from the key and
+    each sentinel row counts as its own payment.
+
+    Args:
+        number: Check number as printed, or None.
+
+    Returns:
+        The number when it may be used as a dedupe key, otherwise None.
+    """
+    if not number or is_sentinel_check(number):
+        return None
+    return number
+
+
+def _impossible_total(stated: Decimal, negatives: Decimal, largest: Decimal | None, unread: int) -> str | None:
+    """Say why a printed TOTAL cannot be produced by the rows beneath it.
+
+    One rule, and it is deliberately the only one, because it is the only
+    direction of disagreement a parse failure cannot imitate:
+
+        every printed row was read, none of them is negative, and the
+        printed TOTAL is smaller than one single row.
+
+    A sum of non-negative numbers is at least as large as its largest term.
+    So under these conditions no reading of these rows -- and no row this
+    layer might have missed, since it missed none -- produces this TOTAL.
+    The document disagrees with itself.
+
+    The mirror-image test, "the TOTAL is larger than the sum of the rows",
+    is **not** used and must not be added. That is precisely the signature
+    of an incomplete parse: rows the layer failed to read are missing from
+    the sum, and calling that a source error would blame the district for a
+    defect in this code. It is what OUT_OF_BALANCE is for.
+
+    The ``unread`` guard carries the same argument. With even one row held
+    unread, a negative row could be sitting in it, and the impossibility
+    claim would rest on rows this layer admits it could not read.
+
+    Args:
+        stated: The printed TOTAL.
+        negatives: Sum of the negative invoice amounts (zero or less).
+        largest: The largest single invoice amount, or None when there are
+            no readable rows.
+        unread: How many printed rows could not be read.
+
+    Returns:
+        A sentence naming the impossibility, or None when the TOTAL is
+        arithmetically reachable.
+    """
+    if unread or negatives != 0 or largest is None:
+        return None
+    if stated < largest:
+        return (
+            f"the printed TOTAL {stated} is smaller than a single line in the set ({largest}); every printed "
+            f"row was read and none is negative, so there is nothing that could have been subtracted"
+        )
+    return None
+
+
 def summarize(row: SetRow) -> None:
     """Compute the three control totals and the reconciliation verdict.
 
@@ -159,11 +264,23 @@ def summarize(row: SetRow) -> None:
     and marking them false would assert the district's arithmetic is wrong
     when what is true is that the document states no arithmetic.
 
+    Parenthesised amounts are read as negative, but the reading is
+    **adopted per set and only on the document's own evidence**: it stands
+    where the printed TOTAL then ties to the cent, and where instead the
+    TOTAL ties with those rows held unread, the rows are held. A sign
+    convention is a claim about what the district meant, and the only
+    witness available is the arithmetic it printed.
+
     Args:
         row: The set to summarize, mutated in place.
     """
     seen: dict[str, Decimal] = {}
+    sentinel_rows = 0
     total = Decimal("0")
+    paren_total = Decimal("0")
+    paren_rows = 0
+    negatives = Decimal("0")
+    largest: Decimal | None = None
     for line in row.lines:
         # A row that could not be read contributes nothing to any control
         # total. It is counted, held and reported -- never summed as if it
@@ -171,21 +288,44 @@ def summarize(row: SetRow) -> None:
         if line["reason_code"] is not None:
             row.unread_lines += 1
             continue
-        if line["invoice_amount"] is not None:
-            total += line["invoice_amount"]
+        amount = line["invoice_amount"]
+        if amount is not None:
+            total += amount
+            if amount < 0:
+                negatives += amount
+            largest = amount if largest is None else max(largest, amount)
+        if line["amount_paren"]:
+            paren_rows += 1
+            paren_total += amount or Decimal("0")
         number = line["check_number"]
-        if number and number not in seen:
-            seen[number] = line["check_amount"] or Decimal("0")
-            if number.isdigit():
-                row.hash_total += int(number)
+        key = dedupe_key(number)
+        if key is None:
+            # Sentinel or absent: its own payment, never merged with another.
+            if number:
+                sentinel_rows += 1
+                row.sum_check_dedup += line["check_amount"] or Decimal("0")
+                row.check_count += 1
+        elif key not in seen:
+            seen[key] = line["check_amount"] or Decimal("0")
+            if key.isdigit():
+                row.hash_total += int(key)
     row.parsed_total = total
-    row.sum_check_dedup = sum(seen.values(), Decimal("0"))
-    row.check_count = len(seen)
+    row.sum_check_dedup += sum(seen.values(), Decimal("0"))
+    row.check_count += len(seen)
+    row.paren_rows = paren_rows
+    row.paren_total = paren_total
+    row.sentinel_rows = sentinel_rows
     row.stated_total = row.parsed.stated_total
     if row.unread_lines:
         row.notes.append(
             f"{row.unread_lines} of {len(row.lines)} printed rows could not be assigned to columns and are "
             f"held with reason code {COLUMN_AMBIGUOUS}; they are excluded from every total on this row."
+        )
+    if sentinel_rows:
+        row.notes.append(
+            f"{sentinel_rows} row(s) carry a sentinel check number, which this corpus uses to mark a credit "
+            f"rather than to identify a warrant. They are excluded from the (fund, check number) dedupe key "
+            f"and each counts as its own payment."
         )
 
     if row.parsed.grid_note and not row.lines:
@@ -205,7 +345,43 @@ def summarize(row: SetRow) -> None:
         # claim that the set is wrong.
         row.reconciled = None
         row.reason_code = "TOTAL_NOT_FOUND"
+        if paren_rows:
+            row.notes.append(
+                f"{paren_rows} row(s) print an amount in parentheses, read as negative ({paren_total}). "
+                f"This listing prints no TOTAL, so the reading could not be confirmed against the document."
+            )
         return
+
+    # The parenthesised-amount reading is adopted only where the document's
+    # own TOTAL agrees with it. Where the TOTAL instead agrees with those
+    # rows held unread, they are held: before this rule existed every such
+    # row failed its column check, so holding them is exactly the behaviour
+    # the set already had, and a set that reconciled cannot stop.
+    if paren_rows and total != row.stated_total and (total - paren_total) == row.stated_total:
+        for line in row.lines:
+            if line["reason_code"] is None and line["amount_paren"]:
+                line["reason_code"] = COLUMN_AMBIGUOUS
+                line["reason_detail"] = (
+                    "the amount column is printed in parentheses and this set's TOTAL ties only with the row "
+                    "held, so the negative reading was not adopted here"
+                )
+                row.unread_lines += 1
+        row.parsed_total = total - paren_total
+        row.paren_rows_held = paren_rows
+        row.notes.append(
+            f"{paren_rows} row(s) print an amount in parentheses. The printed TOTAL ties only with those rows "
+            f"held unread, so the negative reading was not adopted for this set."
+        )
+    elif paren_rows:
+        row.notes.append(
+            f"{paren_rows} row(s) print an amount in parentheses, read as negative ({paren_total}); "
+            + (
+                "the printed TOTAL ties to the cent under that reading."
+                if total == row.stated_total
+                else "the printed TOTAL does not tie under either reading."
+            )
+        )
+
     row.delta = row.parsed_total - row.stated_total
     if row.delta == 0:
         row.reconciled = True
@@ -216,7 +392,16 @@ def summarize(row: SetRow) -> None:
                 f"chosen total is the first after the last data row and it reconciles."
             )
         return
+
     row.reconciled = False
+    impossible = _impossible_total(row.stated_total, negatives, largest, row.unread_lines)
+    if impossible:
+        # A source error, not a parse failure. Keeping it out of
+        # OUT_OF_BALANCE is the point: that bucket is where the parse is
+        # suspect, and this set's parse is not what is wrong.
+        row.reason_code = "TOTAL_INCONSISTENT_AT_SOURCE"
+        row.notes.append(f"source error: {impossible}. The parse is not what is wrong here.")
+        return
     row.reason_code = "MULTIPLE_TOTALS" if row.parsed.extra_totals else "OUT_OF_BALANCE"
 
 
@@ -240,7 +425,11 @@ def mark_cumulative(sets: list[SetRow]) -> None:
         rows.sort(key=lambda r: r.artifact.meeting_date or "")
         seen: set[str] = set()
         for row in rows:
-            numbers = {line["check_number"] for line in row.lines if line["check_number"]}
+            # Sentinels are excluded here for the same reason they are
+            # excluded from the dedupe key: the same sentinel on two cycles
+            # is two unrelated credits, not one restated warrant, and
+            # counting it as restated would understate real money.
+            numbers = {k for line in row.lines if (k := dedupe_key(line["check_number"]))}
             repeated = numbers & seen
             if repeated:
                 repeated_amount = sum(
@@ -568,6 +757,7 @@ LINE_COLUMNS = (
     "is_payroll_warrant",
     "is_person_shaped",
     "is_credit",
+    "amount_paren",
     "reason_code",
     "reason_detail",
     "regex_verdict",
@@ -806,6 +996,8 @@ def main() -> None:
 
         if row.reason_code == COLUMN_AMBIGUOUS:
             status = "column_ambiguous"
+        elif row.reason_code == "TOTAL_INCONSISTENT_AT_SOURCE":
+            status = "total_inconsistent_at_source"
         else:
             status = {
                 True: "parsed",

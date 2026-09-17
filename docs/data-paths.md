@@ -1,6 +1,6 @@
 # Data paths — canonical reference
 
-**Last updated:** 2026-09-13
+**Last updated:** 2026-09-15
 **Host:** Smeltor
 
 Created because every data path recorded in this codebase — in `config.py` defaults, in
@@ -104,6 +104,32 @@ to the legacy flat scraper — that fallback is what caused the incident.
 
 Always use `127.0.0.1`, never `localhost` — Fedora resolves `localhost` to IPv6 first and the
 containers bind IPv4 only.
+
+### Postgres credential — which `.env` to source
+
+`facts/vouchers/db.py` takes the password from `PGPASSWORD` / `POSTGRES_PASSWORD` at runtime
+and never reads a file itself. Two `.env` files on this host define `POSTGRES_PASSWORD`, and
+**only one of them works**:
+
+| File | State |
+|---|---|
+| `ksd-main/.env` | **Working**, as of 2026-09-13. Source this one. It also sets `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` and `POSTGRES_USER` to the values in the table above, so it does not redirect a build to another database. |
+| `ksd-boarddocs-rag/.env` | **Stale.** Its password is rejected: `FATAL: password authentication failed for user "boarddocs"`. Believed — not confirmed — to belong to another system. |
+
+The 2026-09-13 hygiene session replaced the credential in `ksd-main/.env` and left
+`ksd-boarddocs-rag/.env` untouched. The handoff note recorded only that "the dev `.env`
+password was fixed", without saying which file. On 2026-09-15 a session sourced the other one
+and lost a build run to it. **A note about a fixed credential has to name the file it fixed.**
+
+**Operator item, not an agent one:** `ksd-boarddocs-rag/.env` still holds that value in
+plaintext on a dev host. If it belongs to another system, rotating it is the fix — deleting
+the file moves the problem without solving it. That path sits behind
+`~/.claude/hooks/block-production-path.sh`, so agent sessions cannot read or edit it. That is
+the guard working as designed, not an obstacle.
+
+Neither file is in git, and neither ever was: `.env` and `.env.*` are ignored
+(`.gitignore:2-3`), nothing matching `*.env` is tracked at `HEAD`, and nothing matching it has
+been added on any branch in this repository's history. Verified 2026-09-15.
 
 ---
 

@@ -1,0 +1,48 @@
+# Payee allowlist — exact payee strings the operator has decided are
+# organizations and may be published by name.
+#
+# THIS FILE IS EMPTY ON PURPOSE. It was created as a scaffold and must be
+# populated by the operator, not by an agent. Every entry is a decision to
+# publish a name, and that decision is not a machine's to make.
+#
+# FORMAT
+#   One payee string per line, exactly as it is printed on the voucher
+#   listing. Blank lines are ignored. A line whose first non-space
+#   character is "#" is a comment; no payee in this corpus begins with "#"
+#   (measured 2026-09-16 over all 13,306 payees, count = 0).
+#
+# HOW AN ENTRY IS MATCHED
+#   On this package's normal payee key: leading and trailing whitespace
+#   trimmed, runs of internal whitespace collapsed to one space, trailing
+#   . , - & ; stripped, then case-folded. That is the same key the corpus
+#   uses to decide two printed spellings are one payee, so an entry
+#   releases exactly one payee identity. It is NOT a substring match and
+#   NOT a pattern: "KCDA" does not release "KCDA Warehouse".
+#
+# WHAT AN ENTRY OVERRIDES
+#   Every name pattern — the business-marker list and the "Surname, Given"
+#   person guard both. An allowlisted payee is published.
+#
+# WHAT AN ENTRY DOES NOT OVERRIDE
+#   The Payroll Handwrite signal. If any of a payee's own lines carries a
+#   "Payroll Handwrite" description, the district's own records say that
+#   payee is an employee being handed a cheque, and the name stays
+#   withheld even if it is listed here. Nothing is silently ignored: the
+#   session report names the payees this applies to.
+#
+# WHERE TO GET THE CANDIDATES
+#   reports/withheld-payees-2026-09-16.csv lists every withheld payee with
+#   its line count, first and last cycle, the reason it was withheld, and
+#   a flag for bare acronyms and all-caps names. That file is the
+#   worksheet for this one. It is NOT committed — it contains individuals'
+#   names.
+#
+# AFTER EDITING
+#   cd facts/vouchers
+#   VOUCHERS_DB_TRANSPORT=podman .venv/bin/python samples.py
+#   for d in 2026-03-25 2026-05-27 2026-06-24 2026-07-22 2026-08-26; do
+#     VOUCHERS_DB_TRANSPORT=podman .venv/bin/python export_cycle.py --date "$d"
+#   done
+#   VOUCHERS_DB_TRANSPORT=podman .venv/bin/python -m pytest -q -rs test_no_leaks.py
+#
+# --- entries below this line ---

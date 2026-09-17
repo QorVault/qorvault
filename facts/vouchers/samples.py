@@ -27,6 +27,7 @@ import re
 from decimal import Decimal
 
 import db
+from vendors import is_exportable, publishable_name, redact_name
 
 SAMPLE_SIZE = 300
 DEFAULT_SEED = 20260914
@@ -58,14 +59,34 @@ SETS_SQL = """
 """
 
 LINES_SQL = """
-    SELECT line_seq, vendor_raw, check_date::text AS check_date, check_number,
-           check_amount, invoice_amount, description, is_pcard,
-           is_payroll_warrant, is_credit, reason_code, locator_page,
-           locator_char_offset, locator_quote
-    FROM facts.voucher_line
-    WHERE set_id = %s
-    ORDER BY line_seq
+    SELECT l.line_seq, l.vendor_raw, l.check_date::text AS check_date, l.check_number,
+           l.check_amount, l.invoice_amount, l.description, l.is_pcard,
+           l.is_payroll_warrant, l.is_credit, l.amount_paren, l.reason_code,
+           l.locator_page, l.locator_char_offset, l.locator_quote,
+           EXISTS (SELECT 1 FROM facts.voucher_line h
+                   WHERE h.vendor_norm = l.vendor_norm
+                     AND h.description ~* 'payroll\\s+handwrite') AS payroll_handwrite
+    FROM facts.voucher_line l
+    WHERE l.set_id = %s
+    ORDER BY l.line_seq
 """
+
+
+def _withheld(row: dict) -> bool:
+    """Whether this row's payee name must not be printed.
+
+    Delegates to the export layer's classifier rather than repeating its
+    rule. A sample file and an export that decide this separately will
+    disagree eventually, and the first sign of the disagreement would be a
+    person's name in a document that has already been handed out.
+
+    Args:
+        row: A voucher line row.
+
+    Returns:
+        True when the payee name is withheld.
+    """
+    return not is_exportable(row["vendor_raw"], None, bool(row.get("payroll_handwrite")))
 
 
 def money(value: Decimal | None) -> str:
@@ -145,7 +166,18 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
         f"correspondingly weaker bound, and this says nothing about any set that was not sampled."
     )
     add("")
-    add("| # | Page | Vendor | Check date | Check no. | Check amt | Invoice amt | Description | Flags |")
+    withheld_rows = sum(1 for row in lines if _withheld(row))
+    if withheld_rows:
+        add(
+            f"> **{withheld_rows} of these {len(lines)} rows name an individual rather than a business, and "
+            f"the name is withheld.** The same classifier the published exports use decides this, so the two "
+            f"cannot drift apart. A withheld row still carries its page, check number and both amounts, which "
+            f"is everything needed to find it in the source PDF and check the arithmetic — open the page and "
+            f"the name is there. The verbatim quote is redacted for the same reason the column is: the quote "
+            f"is the source line, and it carries the name."
+        )
+        add("")
+    add("| # | Page | Payee | Check date | Check no. | Check amt | Invoice amt | Description | Flags |")
     add("|---:|---:|---|---|---|---:|---:|---|---|")
     for row in lines:
         flags = []
@@ -155,12 +187,14 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
             flags.append("payroll")
         if row["is_credit"]:
             flags.append("credit")
+        if row.get("amount_paren"):
+            flags.append("(negative)")
         if row["reason_code"]:
             flags.append(f"**{row['reason_code']}**")
         description = (row["description"] or "").replace("|", "\\|")[:70]
-        vendor = row["vendor_raw"].replace("|", "\\|")
+        vendor = publishable_name(row["vendor_raw"], None, bool(row.get("payroll_handwrite")))
         add(
-            f"| {row['line_seq']} | {row['locator_page'] or '—'} | {vendor} | "
+            f"| {row['line_seq']} | {row['locator_page'] or '—'} | {vendor.replace('|', chr(92) + '|')} | "
             f"{row['check_date'] or '—'} | {row['check_number'] or '—'} | "
             f"{money(row['check_amount'])} | {money(row['invoice_amount'])} | "
             f"{description} | {' '.join(flags)} |"
@@ -171,10 +205,10 @@ def render(set_row: dict, lines: list[dict], seed: int, drawn: int) -> str:
     add("Each line as extracted, for exact comparison against the page:")
     add("")
     for row in lines:
-        add(
-            f"- `#{row['line_seq']}` p{row['locator_page']} @{row['locator_char_offset']}: "
-            f"`{(row['locator_quote'] or '')[:200]}`"
-        )
+        quote = (row["locator_quote"] or "")[:200]
+        if _withheld(row):
+            quote = redact_name(quote, row["vendor_raw"])
+        add(f"- `#{row['line_seq']}` p{row['locator_page']} @{row['locator_char_offset']}: `{quote}`")
     # No trailing blank line: the file must end with exactly one newline or
     # the end-of-file-fixer pre-commit hook rewrites it on every regeneration.
     while out and not out[-1]:

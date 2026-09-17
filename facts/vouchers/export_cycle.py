@@ -85,6 +85,14 @@ VENDORS_SQL = """
            count(DISTINCT l.check_number)                              AS check_count,
            count(*) FILTER (WHERE l.reason_code IS NOT NULL)           AS unread_lines,
            bool_and(l.reconciled IS TRUE)                              AS all_reconciled,
+           -- Feeds the classifier's Payroll Handwrite override. Measured
+           -- over the payee's WHOLE history, not just this cycle: a payee
+           -- who is an employee in March is an employee in May, and a
+           -- cycle-local test would publish them in the cycles where the
+           -- hand-written cheque happens not to fall.
+           EXISTS (SELECT 1 FROM facts.voucher_line h
+                   WHERE h.vendor_norm = l.vendor_norm
+                     AND h.description ~* 'payroll\\s+handwrite')      AS payroll_handwrite,
            min(l.locator_page)                                         AS first_page
     FROM facts.voucher_line_deduped l
     WHERE l.meeting_date = %s
@@ -196,7 +204,7 @@ def exportable_vendors(vendors: list[dict]) -> tuple[list[dict], int, Decimal]:
     """
     publishable, withheld, withheld_total = [], 0, Decimal("0")
     for row in vendors:
-        if is_exportable(row["vendor_raw"], WATCH_LIST_NORMS):
+        if is_exportable(row["vendor_raw"], WATCH_LIST_NORMS, bool(row.get("payroll_handwrite"))):
             publishable.append(row)
         else:
             withheld += 1

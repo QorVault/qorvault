@@ -20,11 +20,14 @@ printed every time so they cannot be quietly forgotten.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import db
+
+HAND_SUMS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "hand_sums.yaml")
 
 # ------------------------------------------------------------------ HARD --
 #
@@ -153,11 +156,17 @@ HARD_LINES: tuple[dict, ...] = (
 # Whole checks whose invoice lines must sum to the check amount printed on
 # every one of those lines. This is the document's own arithmetic.
 #
-# line_count for check 9252601789 is 12, read off the document. The build
-# brief says 13; 2026-06-24 ACH prints twelve rows carrying that check
-# number, eleven on page 27 and one on page 28, and those twelve sum to
-# 40,817.50 exactly. The deviation is reported, and the assertion is
-# anchored on the printed check amount rather than on the count.
+# line_count for check 9252601789 is 12, and this is now settled rather
+# than reported as a deviation: the operator has ruled that the document is
+# right and the brief's 13 was wrong. 2026-06-24 ACH prints twelve rows
+# carrying that check number, eleven on page 27 and one on page 28, and
+# those twelve sum to 40,817.50 exactly, which is the check amount printed
+# on every one of them.
+#
+# The correction is to this text, not to the data. The figures below were
+# already what the document says; what was wrong was calling the document's
+# own count a deviation from the brief, which framed the source as suspect
+# when it was the brief that was.
 HARD_CHECKS: tuple[dict, ...] = (
     {
         "name": "2026-06-24 ACH 9252601789 Pacifica Law Group",
@@ -218,6 +227,18 @@ HARD_CUMULATIVE = {
 # From a prior manual parse. Deviations are reported, never failed on: a
 # hand count is evidence, not an oracle, and where the two disagree the
 # right response is to look, not to change the code until it agrees.
+#
+# Retiered ADVISORY deliberately, and the reason is provenance rather than
+# accuracy: **nobody knows who produced these counts or how**. They were
+# committed about an hour and fifty minutes before the June-August PDFs
+# arrived on this machine, which bounds when they were made and nothing
+# else. An unattributed figure cannot be an oracle, because there is no way
+# to ask it what it counted. The provenance is recorded as `who: unknown`
+# in fixtures/hand_sums.yaml under `manual_parse_2026` so the gap travels
+# with the numbers instead of being folklore.
+#
+# Contrast fixtures/hand_sums.yaml fixture_A and fixture_B, which are HARD:
+# those name a person, a date and a method.
 ADVISORY_COUNTS: dict[str, dict[str, tuple[int, int]]] = {
     # meeting_date -> fund -> (check_count, line_count)
     "2026-03-25": {"GF": (384, 1533), "ACH": (241, 1101), "Capital": (29, 40)},
@@ -757,6 +778,184 @@ def check_advisory_vendors(suite: Suite, sets: dict) -> None:
             )
 
 
+def load_hand_sums(path: str = HAND_SUMS_PATH) -> dict[str, dict[str, str]]:
+    """Read ``hand_sums.yaml`` without adding a YAML dependency.
+
+    The same decision facts/minutes made for ``hand_counts.yaml``, for the
+    same reason: this package pins two runtime dependencies and neither is
+    worth adding for one file whose structure this repository also writes.
+    The accepted structure is a top-level mapping of fixture name to a flat
+    mapping of scalars::
+
+        fixture_name:
+          key: value
+            continued on the next line
+
+    A line indented further than its key and carrying no ``key:`` of its own
+    is folded onto the previous value, which is how the operator's wrapped
+    prose survives unedited.
+
+    Args:
+        path: Path to the file.
+
+    Returns:
+        Mapping of fixture name to its fields. Empty when the file is absent.
+
+    Raises:
+        ValueError: When a line inside an entry is neither a ``key: value``
+            pair nor a continuation, so a malformed file fails loudly rather
+            than yielding a fixture with a field silently missing.
+    """
+    if not os.path.isfile(path):
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    last_key: str | None = None
+    with open(path, encoding="utf-8") as fh:
+        for lineno, raw in enumerate(fh, 1):
+            line = raw.split(" #", 1)[0].rstrip() if " #" in raw else raw.rstrip()
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if not line.startswith((" ", "\t")):
+                name = line.rstrip(":").strip()
+                out[name] = {}
+                current, last_key = name, None
+                continue
+            if current is None:
+                # An indented line before any fixture name owns nothing.
+                # Skipping it would drop a field silently, and a fixture
+                # missing its expected value passes without checking
+                # anything.
+                raise ValueError(f"{path}:{lineno}: indented line before any fixture name: {line.strip()!r}")
+            body = line.strip()
+            key, sep, value = body.partition(":")
+            if sep and " " not in key and key:
+                last_key = key.strip()
+                out[current][last_key] = value.strip()
+            elif last_key is not None:
+                out[current][last_key] = f"{out[current][last_key]} {body}".strip()
+            else:
+                raise ValueError(f"{path}:{lineno}: expected 'key: value' or a continuation, got {body!r}")
+    return out
+
+
+def _decimal(text: str | None) -> Decimal | None:
+    """Parse a fixture field into a Decimal.
+
+    Args:
+        text: Field value.
+
+    Returns:
+        The value, or None when it is absent or not a number.
+    """
+    if text is None:
+        return None
+    try:
+        return Decimal(text.strip())
+    except (InvalidOperation, AttributeError):
+        return None
+
+
+HAND_SUM_SQL = """
+    SELECT count(*)                                                     AS line_count,
+           count(DISTINCT l.check_number)                               AS check_count,
+           COALESCE(sum(l.invoice_amount) FILTER (WHERE l.reason_code IS NULL), 0)
+                                                                        AS raw_sum,
+           COALESCE(sum(l.invoice_amount) FILTER (
+               WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check), 0)
+                                                                        AS deduped_sum,
+           count(*) FILTER (WHERE l.reason_code IS NULL AND l.is_first_cycle_for_check)
+                                                                        AS deduped_line_count
+    FROM facts.voucher_line_deduped l
+    WHERE l.vendor_norm = %s
+      AND l.meeting_date = ANY(%s::date[])
+"""
+
+
+def check_hand_sums(suite: Suite) -> None:
+    """HARD: the operator's two hand sums, against the dedupe view.
+
+    These are the only figures in this package that were produced outside
+    it. Fixture A pins that the dedupe removes nothing when nothing repeats;
+    fixture B pins that it removes exactly the one restated check and not a
+    cent more. Together they bound the dedupe from both sides, which neither
+    does alone.
+
+    Blocked rather than failed when the file is missing: a fixture whose
+    source is not on the machine did not run, and a check that did not run
+    is not a check that passed.
+
+    Args:
+        suite: Collector for results.
+    """
+    entries = load_hand_sums()
+    if not entries:
+        suite.add(
+            Result(
+                name="hand_sums",
+                status="BLOCKED",
+                detail=f"No hand-sum file at {HAND_SUMS_PATH}.",
+            )
+        )
+        return
+
+    for name, entry in sorted(entries.items()):
+        tier = entry.get("tier", "ADVISORY").strip()
+        vendor = entry.get("assert_vendor_norm")
+        if not vendor:
+            # manual_parse_2026 carries no assertable figure by design: its
+            # author and method are unknown, so it is provenance on the
+            # record rather than a check. Reported, never failed on.
+            suite.add(
+                Result(
+                    name=name,
+                    status="REPORT",
+                    expected=entry.get("covers", ""),
+                    actual=f"who={entry.get('who', 'unknown')} method={entry.get('method', 'unknown')}",
+                    detail="Tiered ADVISORY: provenance unknown, so it is context, not an oracle.",
+                )
+            )
+            continue
+
+        cycles = [c.strip() for c in entry.get("assert_cycles", "").split(",") if c.strip()]
+        rows = db.query_dicts(HAND_SUM_SQL, (vendor, cycles))
+        got = rows[0] if rows else {}
+        checks: list[tuple[str, object, object]] = [
+            ("raw_sum", _decimal(entry.get("assert_raw_sum")), got.get("raw_sum")),
+            ("deduped_sum", _decimal(entry.get("assert_deduped_sum")), got.get("deduped_sum")),
+        ]
+        if entry.get("assert_line_count"):
+            checks.append(("line_count", int(entry["assert_line_count"]), got.get("line_count")))
+        if entry.get("assert_check_count"):
+            checks.append(("check_count", int(entry["assert_check_count"]), got.get("check_count")))
+        if entry.get("assert_deduped_line_count"):
+            checks.append(
+                ("deduped_line_count", int(entry["assert_deduped_line_count"]), got.get("deduped_line_count"))
+            )
+        if entry.get("assert_difference"):
+            expected_difference = _decimal(entry["assert_difference"])
+            actual_difference = (got.get("raw_sum") or Decimal("0")) - (got.get("deduped_sum") or Decimal("0"))
+            checks.append(("difference", expected_difference, actual_difference))
+
+        bad = [(field_name, want, have) for field_name, want, have in checks if want is not None and want != have]
+        suite.add(
+            Result(
+                name=name,
+                status="PASS" if not bad else ("FAIL" if tier == "HARD" else "REPORT"),
+                expected="; ".join(f"{f}={w}" for f, w, _ in checks if w is not None),
+                actual="; ".join(f"{f}={h}" for f, _, h in checks),
+                detail=(
+                    ""
+                    if not bad
+                    else "; ".join(f"{f}: expected {w}, got {h}" for f, w, h in bad)
+                    + f". Hand sum by {entry.get('who', 'unknown')} on {entry.get('when', 'unknown')}. "
+                    "The hand sum is not edited to match the code."
+                ),
+            )
+        )
+
+
 def run() -> Suite:
     """Run every fixture.
 
@@ -776,6 +975,7 @@ def run() -> Suite:
     check_every_line_has_a_locator(suite)
     check_advisory_counts(suite, sets)
     check_advisory_vendors(suite, sets)
+    check_hand_sums(suite)
     return suite
 
 

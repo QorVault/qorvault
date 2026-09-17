@@ -1,0 +1,80 @@
+# Operator hand sums for the voucher fact layer.
+#
+# WHY THIS FILE EXISTS
+# Everywhere else, this package checks the parser against itself: geometry
+# against a retired regex, a set's lines against its own printed TOTAL. Those
+# catch a parser that is inconsistent. They cannot catch a parser that is
+# consistently wrong. These two sums were produced by a human opening the PDFs
+# and adding the column up, outside this code entirely, and they are the only
+# figures here that this package could not have produced for itself.
+#
+# WHAT EACH FIELD MEANS
+#   what     The quantity summed, precisely enough to repeat it.
+#   value    The operator's figure. Never edited to match the code. If the
+#            code disagrees, the code is what gets investigated.
+#   source   The documents summed, identified by digest, not by path.
+#   who      Who produced it. "unknown" is a real and important answer.
+#   when     When it was produced.
+#   method   How, in enough detail to judge whether it is independent.
+#   covers   What the fixture does and does not demonstrate.
+#   tier     HARD fails the build. ADVISORY is reported and does not.
+#
+# The assert_* keys are additions to the operator's entries, not part of them:
+# they restate the figure already given in `value` as a bare number so the
+# test does not have to parse prose to find it. If an assert_* key and its
+# `value` prose ever disagree, the prose is authoritative and the key is the
+# bug.
+
+fixture_A_teamsters_2026:
+  what: sum of Invoice Amount for vendor "Teamsters" across the five
+    2026 ACH listings (03-25, 05-27, 06-24, 07-22, 08-26)
+  value: 30344.00   # 10 lines, 5 checks
+  source: the five ACH PDFs; sha256 matched to hand-sum-candidates.md
+  who: Don Cook (operator); extraction run in the claude.ai sandbox
+  when: 2026-09-15
+  method: pdftotext -layout, lines beginning "Teamsters", invoice
+    column summed with Python Decimal; no QorVault code; operator
+    spot-checked the ten lines on the rendered pages
+  covers: pass-through only — no check repeats across these cycles
+  tier: HARD
+  assert_vendor_norm: teamsters
+  assert_fund: ACH
+  assert_cycles: 2026-03-25,2026-05-27,2026-06-24,2026-07-22,2026-08-26
+  assert_raw_sum: 30344.00
+  assert_deduped_sum: 30344.00
+  assert_line_count: 10
+  assert_check_count: 5
+
+fixture_B_united_volleyball:
+  what: raw and deduplicated Invoice Amount sums for "United
+    Volleyball Supply LLC" across 2025-07-23 ASB, 2025-08-13 ASB,
+    2025-08-13 Capital, 2026-07-22 ASB
+  value: raw 4324.26 ; deduplicated 3914.61 ; difference 409.65
+    (check 417751 printed in both 2025 ASB listings; counted once)
+  source: the four PDFs; sha256 matched as above
+  who: Don Cook (operator); extraction run in the claude.ai sandbox
+  when: 2026-09-15
+  method: as fixture A; restatement = identical check number and
+    amount in two listings
+  covers: the dedupe only. Three of the four sets are OUT_OF_BALANCE
+    and 2025-08-13 Capital is TOTAL_INCONSISTENT_AT_SOURCE; this
+    fixture verifies the dedupe, not the sets; no figure from these
+    sets is speakable
+  tier: HARD
+  assert_vendor_norm: united volleyball supply llc
+  assert_cycles: 2025-07-23,2025-08-13,2026-07-22
+  assert_raw_sum: 4324.26
+  assert_deduped_sum: 3914.61
+  assert_difference: 409.65
+  assert_restated_check: 417751
+  assert_line_count: 5
+  assert_deduped_line_count: 4
+
+manual_parse_2026:
+  what: row counts per set for the 2026-03-25 and 2026-05-27 listings
+  who: unknown
+  when: before the June–August PDFs arrived (fixtures committed
+    ~1h50m earlier)
+  method: unknown
+  covers: row counts only
+  tier: ADVISORY

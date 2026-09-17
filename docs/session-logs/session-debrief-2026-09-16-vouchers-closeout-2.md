@@ -872,3 +872,302 @@ in the report.
 **If the allowlist has been populated**, regenerate samples and exports,
 confirm `test_no_leaks.py` still passes, and commit the artifacts. That is
 the last blocker before fast-forward.
+
+## Rewrite executed — 2026-09-17
+
+**Pre-rewrite tip: `35738cf2849a4ffa2f77de22dc85007de3c3254e`.**
+Post-rewrite tip: `782dd5a`. The safety tag `pre-redaction-2026-09-16` is
+still in place and the "Then, and only then" block — tag delete, reflog
+expire, `gc` — was **not** run, so `git reset --hard
+pre-redaction-2026-09-16` remains available. `refs/original` was deleted as
+the plan specifies.
+
+The tip hash was recovered from `claude/facts-vouchers@{1}`, the reflog entry
+immediately below `filter-branch: rewrite`, and cross-checked against the
+commit line printed when the `.gitignore` commit was made. It was
+deliberately **not** read off the tag: Verification 3 exists to compare the
+tag against that value, and sourcing it from the tag would have made the
+check compare the tag to itself.
+
+### Deviations from the plan as written, and why
+
+- **The `.gitignore` commit ran first**, ahead of Step 1. This is why
+  `git status --short` was already clean at Step 1 despite
+  `reports/withheld-payees-2026-09-16.csv` sitting untracked — the new
+  ignore rule covered it. Running it first is the better order and should be
+  the recorded one.
+- **`git checkout -- facts/vouchers/samples exports` was omitted.** The 38
+  regenerated artifacts were not dirty; they had been stashed as `stash@{0}
+  regenerated artifacts pre-rewrite`, where they remain. The `mkdir`/`mv` of
+  the four untracked new samples to `~/redaction-scratch/` was kept and ran.
+- **Blocks 0, the safety tag, the rewrite, and Verification 5 were run by
+  the operator by hand.** The command-review hook escalated the Step 0 block
+  on the literal text `git rm -r --cached` inside the index-filter heredoc,
+  before anything executed. The hook was not bypassed or worked around.
+
+### Blocks
+
+| Block | Result |
+|---|---|
+| `.gitignore` commit | PASS — `35738cf`, all pre-commit hooks green |
+| Step 1, clean tree (`git checkout --` omitted) | PASS — four untracked samples moved to `~/redaction-scratch/`; `git status --short` printed nothing |
+| Step 0, substitution set out of tree + index filter | PASS — run by hand after hook escalation |
+| Safety tag | PASS — `pre-redaction-2026-09-16` |
+| Step 2, the rewrite | PASS — run by hand; 16 commits rewritten, `refs/original` deleted |
+
+### Verifications
+
+| # | Result |
+|---|---|
+| 1 — artifacts gone by content | **PASS** — `artifacts=0 leaking=0` on all 16 commits, no `LEAK` line. Name list built from 10,527 withheld payees. |
+| 2 — no individual named in any commit | **PASS** — `files-naming-an-individual=0` on all 16, tip included. |
+| 3 — the tag restores the old branch | **PASS** — tag pins the pre-rewrite tip, tree intact, 38 artifacts still reachable from the tag, diff 38 files / 11,370 deletions. |
+| 4 — substitutions only, nothing else | **PASS** — `checked 81 file-versions; 46 of them were rewritten`; no `MISMATCH`, no `UNPAIRED`. |
+| 5 — the substitution file is gone | **PASS** — all four `gone:` lines, git has never heard of the file. |
+
+**On Verification 4's counts.** This section predicted `checked=67,
+rewritten=46`. Checked came in at **81** because the rewrite range holds 16
+commits rather than the twelve it held when the prediction was written; the
+extra commits carry copies of the seven paths that were already clean, so
+they verify and pass unchanged. **`rewritten=46` matched exactly** — the
+same 46 file-versions that were supposed to change are the ones that
+changed, each byte-identical to its original piped through the filter.
+
+**On Verification 5's one flagged path.** `_build/verify_section.md` matched
+the replacement phrase but not the name list. It is the drafting copy of
+Verifications 4 and 5, and its whole text is a verbatim substring of this
+debrief (91 of 91 non-blank lines). The match is the check finding its own
+source: line 92 of that file *is* the V5 `grep` command, which quotes the
+phrase as its search string. It holds no individual's name.
+
+### The pytest line — FAILED the stated condition
+
+```
+1 failed, 385 passed in 1.26s
+```
+
+This section required `386 passed, 0 failed, 0 skipped`. The failure is
+`test_no_leaks.py::test_there_are_files_to_check` —
+*"A green run over zero files is not evidence of anything"* — asserting that
+`_published_files()` is non-empty. It is empty: `facts/vouchers/samples/`
+and `exports/` no longer exist in the working tree, because the rewrite
+removed them from every commit and `filter-branch` checked out the rewritten
+tip. `git ls-tree -r HEAD -- facts/vouchers/samples exports` returns 0.
+
+**This is the guard doing its job, not damage from the rewrite.** The suite
+still holds 386 tests (1 + 385); none were lost. The expectation written
+here accounted for the content rewrite of `test_parsers.py` and
+`test_payees.py` but not for the artifact deletion that the same rewrite
+performs — and the `386 passed` figure was originally measured *with* the
+regenerated artifacts present in the tree. The same failure would have
+occurred under the plan as written, because after the rewrite there is no
+committed copy of the artifacts left to restore.
+
+Two consequences worth carrying forward. First, with zero files to scan,
+`test_no_published_file_contains_a_withheld_name` — the HARD control the
+classifier exists to enforce — is **passing vacuously**. That is precisely
+what the guard test was added to expose. Second, this resolves at step 5:
+regenerate the artifacts against the populated allowlist and re-run, at
+which point `386 passed, 0 failed, 0 skipped` becomes the real expectation.
+Nothing was unstashed or regenerated to make the suite green.
+
+### Scratch deletions
+
+Five recon files were deleted from `facts/vouchers/_build/` before
+Verification 5, after a name sweep found individuals' names in eight files
+there. None was ever in git; all are ignored by `facts/.gitignore:8`
+(`*/_build/`).
+
+| File | Why deleted |
+|---|---|
+| `recon_stdout.json` | Byte-for-byte the same findings as `recon_findings.json` (identical parsed JSON; the 1-byte difference is `print()`'s trailing newline). |
+| `recon_findings_run1.json` | Earlier partial run — 11 of the final 14 sections, missing `coverage_check`, `reconciliation_feasibility`, `reconciliation_by_layout`; carried 8 names against the final run's 5. |
+| `recon_findings_run2.json` | Same, superseded by the 22:19 run. |
+| `recon_findings.json` | Canonical Phase 0 findings, but read by nothing; its conclusions are the numbered sections of `reports/facts-vouchers-recon-2026-09-14.md`, which at line 854 already declares this file gitignored "because it contains verbatim vendor and description text." Regenerable via the committed A5 command (~25 min) while the source corpus is present. |
+| `recon_cache.json` | 693-entry SHA-256 probe cache; 78 entries held names. Deleting costs a ~25-minute re-probe on the next recon run, not information. |
+
+**`_build/payee_fixture_map.txt` is now the one remaining name-bearing file
+under `_build/`.** It is kept deliberately, per the Verification 5 note
+above: it is the hash-to-name lookup that traces a failing fixture back to
+the payee it identifies, it is gitignored, and it is regenerable with
+`python test_payees.py`.
+
+One consequence of deleting `redaction-subs.tsv` and
+`make_redaction_subs.py` together: the 49-name list no longer exists, so a
+name-based sweep of anything — logs, transcripts, scratch — can no longer be
+run as specified. `payee_fixture_map.txt` is now the only local source of
+those names.
+
+### Monitoring infrastructure — what it captured
+
+Checked read-only, on the question of whether the per-minute git
+auto-snapshot or terminal session recording preserved `redaction-subs.tsv`,
+`redact-index-filter.sh`, or the replacement phrase.
+
+**The git auto-snapshot is not running and never saw these files.** There is
+no crontab for `donald`, `~/.config/systemd/user/` holds no unit files at
+all, and `ksd-fs-watcher.service` and `ksd-log-aggregator.service` both
+report `inactive`. Forty `auto-snapshot` commits do exist, all between
+2026-02-27 and 2026-03-02 — six months before the voucher work — on a ref
+unrelated to this branch, with **zero** inside the rewrite range. No
+auto-snapshot commit ever touched a `_build/` path, which is expected since
+`_build/` is gitignored.
+
+**Terminal session recording is not installed either** — `claude-session`
+and `cs` are not defined in this shell, and there are no `.cast` or
+`typescript` capture files under `~/workspace`.
+
+**What does record is Claude Code's own logging**, and it captured the
+**filenames and command text but not the file contents**:
+
+| Location | `redaction-subs` | `redact-index-filter` | the phrase |
+|---|---|---|---|
+| `~/.claude/history.jsonl` | 3 | 2 | 1 |
+| `~/.claude/logs/ai-review.jsonl` | 7 | 2 | 0 |
+| `~/.claude/file-history/<session>/` | 4 files | 4 files | 2 files |
+| `~/.claude/projects/-home-donald-workspace/*.jsonl` | 2 files | 2 files | 2 files |
+
+The substitution table has 49 rows and every row contains the replacement
+phrase exactly once, so any file holding the table would show **at least 49**
+phrase occurrences. The highest count anywhere is **8**. All four
+`file-history` entries are markdown — 0 tab-delimited lines, 7 to 36
+headings, code fences throughout, one of them 874 lines, matching this
+debrief — not the TSV. The body of `redact-index-filter.sh` **is** recorded,
+in the hook's review log and the session transcript, but that script names
+seven paths and contains no individual's name.
+
+Not covered by this check: whether any of the 49 names appear in those logs
+on their own, independent of these three strings. That sweep was then run
+against `payee_fixture_map.txt` as the name source — see the next
+subsection, which supersedes this paragraph.
+
+### The name sweep of Claude Code's logs — run 2026-09-17
+
+**It covers 31 of the 49 names.** `redaction-subs.tsv` is gone, so the name
+source is `_build/payee_fixture_map.txt`, whose `F*_INDIVIDUALS` groups hold
+31 individuals. The map's other six names are organizations and single-name
+markers and are not members of the substitution set. Every count below is
+therefore a **lower bound**: 18 of the 49 names were not searched for at
+all, and no local source for them now exists.
+
+Read-only throughout. Nothing was deleted or modified, and no name was
+printed — the scripts load names at run time and only ever count them,
+because this sweep's own output lands in the transcripts being swept.
+
+Scripts, in `_build/` and gitignored: `log_name_sweep.py` (the sweep),
+`log_name_sweep_detail.py` (the per-file breakdown). Matching runs in three
+tiers, each anchored at both ends so a short token cannot match inside a
+longer word, and each tolerant of the separators these files actually use —
+a comma, a lost space, a markdown cell divider, or a JSON-escaped `\n`,
+`\r\n` or `\\n` where a name wrapped across a line. Tier A is the name in
+corpus order, tier B the same name in prose order (`Surname, Given Middle`
+reversed, and shortened to `Given Surname`), tier C the surname alone.
+Sixteen matcher cases on fabricated names pass, including all four escape
+forms and five must-not-match cases.
+
+Scope: all of `~/.claude` — **4,406 files, 235.3 MB** — not only the four
+locations in the table above. Eleven binaries under `plugins/` would not
+decode as UTF-8 and were skipped; `.credentials.json` was deliberately not
+opened.
+
+**Tier A+B — a full name. Twelve files hold one, and between them they hold
+all 31.**
+
+| Location | Files scanned | Files with a hit | Occurrences | Names |
+|---|---|---|---|---|
+| `projects/` | 335 | 3 | 611 | 31 |
+| `file-history/` | 1,774 | 9 | 168 | 31 |
+| all 37 other locations | 2,297 | 0 | 0 | 0 |
+| **total** | **4,406** | **12** | **779** | **31** |
+
+`history.jsonl`, `logs/`, `debug/` (107.9 MB), `paste-cache/`, `tasks/`,
+`plans/`, `shell-snapshots/` and `backups/` are **clean at tier A+B** — a
+useful result on its own, since the earlier check found the *filenames* in
+`history.jsonl` and `logs/ai-review.jsonl` and it would have been reasonable
+to assume the names rode along with them. They did not.
+
+The twelve files, and what each one is:
+
+| Occurrences | Names | File | What it is |
+|---|---|---|---|
+| 367 | 31 | `projects/-home-donald-workspace/1a886dcf….jsonl` | Session transcript, 2026-09-15 |
+| 240 | 31 | `projects/-home-donald-workspace/ff25cce9….jsonl` | Session transcript, 2026-09-16/17 |
+| 4 | 1 | `projects/-home-donald-workspace/91d4328a….jsonl` | Session transcript, 2026-09-15 |
+| 38 ×3 | 31 | `file-history/{1a886dcf,ff25cce9}/d9c1375…@v1,v2` | `facts/vouchers/test_payees.py`, pre-masking |
+| 32, 18 | 31, 17 | `file-history/1a886dcf/8a05629…@v2,v3` | An uncommitted working document — see below |
+| 1 | 1 | `file-history/1a886dcf/7fd7fd2…@v2` | `reports/vouchers-closeout-2026-09-15.md`, pre-masking |
+| 1 ×3 | 1 | `file-history/{1a886dcf,ff25cce9}/c267f57…@v1,v2` | `facts/vouchers/vendors.py`, pre-masking |
+
+Identification did not need the files' text: three of the nine
+`file-history` entries hash to git blobs that still exist in the object
+store, and the other six share a per-path filename hash with one of those
+three. The odd one out is `8a05629…`, two versions of a 909-line, 46 KB
+working document — "Hand-sum fixture candidates" and "Step 2 — Locators"
+from the 2026-09-15 fixture selection — that **exists in no commit on any
+ref and nowhere on disk.** It was never committed and has been deleted.
+Claude Code's `file-history` is the only place it survives, and it carries
+all 31 names.
+
+**The three blobs that are still in git are reachable only from
+`pre-redaction-2026-09-16`, not from `claude/facts-vouchers`.** Checked
+per blob with `git rev-list --objects`. That is the safety tag doing exactly
+what Verification 3 describes, not a failure of the rewrite.
+
+**Tier C — a surname alone. An upper bound, not a finding.**
+
+| | Occurrences | Files | Surnames |
+|---|---|---|---|
+| inside the 12 files above | 1,193 | 12 | 29 |
+| everywhere else | 159 | 35 | 6 |
+| **total** | **1,352** | **47** | **29** |
+
+Eighty-eight percent of tier C sits inside files tier A+B already names. The
+159 that do not involve **six** surnames spread thinly across unrelated
+sessions, `debug/`, `plugins/` and one `paste-cache/` entry — the shape of
+common surnames colliding with ordinary text rather than of a leak. Tier C
+is reported because a surname written on its own is still a disclosure; it
+is reported separately because most of these are coincidence.
+
+**What this means.** The history rewrite cleaned git. It could not reach
+`~/.claude`, which is outside the repository, and which holds pre-masking
+copies of three source files, one deleted uncommitted document, and three
+session transcripts — 779 full-name occurrences of all 31 searchable names,
+plus whatever share of the unsearched 18 is in there.
+
+**Disposition — delete all twelve.** Written as a script for the operator to
+run rather than run here: `_build/claude-log-cleanup.sh`. Twelve `rm -f`
+lines, then a re-run of `log_name_sweep.py` that must report zero files and
+zero occurrences at the full-name tier, then removal of both sweep scripts.
+The verification **gates** the removal — if the tier is not clean the scripts
+stay, so whatever remains can still be found; deleting the only tool that
+can check would be the wrong order. `bash -n` and `shellcheck` are clean, the
+twelve paths were diffed against the sweep's own hit list with no drift, all
+twelve were confirmed to exist so `rm -f` is not hiding a typo, and the gate
+was tested against both a dirty and a clean sweep output as well as against
+unparseable input. Nothing holds any of the twelve open and none is the live
+session's transcript. **Not run.**
+
+Two costs, weighed and accepted: deleting the three transcripts ends
+`claude --resume` for sessions `1a886dcf`, `ff25cce9` and `91d4328a`, and
+`8a05629…` is the last copy of that working document in existence.
+
+A clean result from that script will mean "none of the 31", not "none of the
+49". The 18 unsearched names remain unsearchable for want of a source.
+
+**Also outstanding: `~/backups/claude-config/`.** Two tarballs dated
+2026-09-16, 15:03 and 16:48, 41 MB each, hold pre-masking copies of the same
+material — 36 archive members for session `1a886dcf` and 2 for `91d4328a`.
+Neither contains `ff25cce9`, whose entries were written between 18:36 and
+20:02 that evening, after both backups were taken. These sit outside
+`~/.claude`, so the sweep never saw them and `claude-log-cleanup.sh` does not
+touch them. **Scheduled for deletion after the hook batch.**
+
+### Readiness
+
+**NOT READY**, unchanged. The history rewrite — blocking condition 1 — is
+now run and verified on all five checks. Condition 2 is untouched: the
+allowlist is still unpopulated, the artifacts are still unregenerated and
+uncommitted, and `build.py --reload` (`_build/rebuild2.sh`) has still not
+run. The pytest line will not return `386 passed, 0 failed, 0 skipped` until
+the artifacts are regenerated, and until then the leak control passes
+vacuously.

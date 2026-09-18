@@ -1171,3 +1171,102 @@ uncommitted, and `build.py --reload` (`_build/rebuild2.sh`) has still not
 run. The pytest line will not return `386 passed, 0 failed, 0 skipped` until
 the artifacts are regenerated, and until then the leak control passes
 vacuously.
+
+## rebuild2 executed — 2026-09-18
+
+The second reload ran to completion and every gate passed. Command, as run
+by the operator from `facts/vouchers`:
+
+```bash
+bash _build/rebuild2.sh 2>&1 | tee _build/rebuild2.out
+```
+
+| Stage | Started | Finished | Result |
+|---|---|---|---|
+| `schema.sql` applied | 08:26:45 | 08:26:45 | `schema applied.` |
+| `build.py --dry-run` (683 PDFs) | 08:26:45 | 08:47:08 | completed, 20 min |
+| STOP check vs `baseline-sets-before-rebuild2.psv` | 08:47 | 08:47 | **clean** — baseline 108, dry run 108, none stopped |
+| `build.py --reload` (683 PDFs, the database write) | 08:47 | 09:07:44 | completed, 20 min |
+| STOP check vs the live tables | 09:07 | 09:07 | clean — prints only on failure, and did not |
+| `compare_sets.py` | 09:07 | 09:07 | **`OK: every difference is one that was expected.`** |
+| `fixtures.py` | 09:07 | 09:07:52 | **`PASS 38   FAIL 0   BLOCKED 0   REPORT 24`** |
+
+Forty-one minutes end to end. The final line, which the script prints only
+after all seven stages succeed:
+
+```
+rebuild2 complete: 459 sets, 108 reconciling, 12 reason codes changed,
+no dollar figure, line count or reconciliation status moved, fixtures 38 PASS / 0 FAIL.
+```
+
+### What the comparison found
+
+```
+sets before: 459   sets after: 459
+
+DOLLAR FIGURES changed (Decimal comparison): 0
+LINE COUNTS changed: 0
+RECONCILIATION STATUS changed: 0
+REASON CODES changed: 12
+    2023-04-26:Capital             (none) -> PERIOD_NOT_STATED
+    2025-02-26:ACH                 (none) -> PERIOD_NOT_STATED
+    2025-02-26:ASB                 (none) -> PERIOD_NOT_STATED
+    2025-02-26:Capital             (none) -> PERIOD_NOT_STATED
+    2025-02-26:Custodial           (none) -> PERIOD_NOT_STATED
+    2025-02-26:GF                  (none) -> PERIOD_NOT_STATED
+    2025-02-26:Trust               (none) -> PERIOD_NOT_STATED
+    2025-08-13:ACH                 (none) -> PERIOD_NOT_STATED
+    2025-08-13:ASB                 (none) -> PERIOD_NOT_STATED
+    2025-08-13:Custodial           (none) -> PERIOD_NOT_STATED
+    2025-08-13:GF                  (none) -> PERIOD_NOT_STATED
+    2026-01-14:GF                  (none) -> PERIOD_INVALID_AT_SOURCE
+```
+
+This is exactly the outcome the script's header predicted — 11 sets to
+`PERIOD_NOT_STATED`, 1 to `PERIOD_INVALID_AT_SOURCE` — and exactly the
+"12" this debrief's rebuild table required. The period rulings changed the
+*classification* of twelve sets and touched no dollar figure, no line count
+and no reconciliation result anywhere in the 459. The three meetings
+involved — 2023-04-26, 2025-02-26 and 2025-08-13 — are the ones whose
+listings state no period, which is what the reason code says; the
+2026-01-14 General Fund set is the one whose stated period is invalid at
+the source, as ruled.
+
+`compare_sets.py` compared money as `Decimal`; the `0` under dollar figures
+is a real zero, not `0` against `0.00`.
+
+### Evidence, all under `facts/vouchers/_build/`
+
+- `rebuild2.out` — the `tee` of the whole run, verbatim above
+- `schema2.log` — the schema application
+- `dryrun2.log` / `dryrun2.progress` — the dry run's findings and its 683-PDF progress
+- `recon2_before.txt` / `recon2_dry.txt` / `recon2_db.txt` — the three 108-set lists the STOP checks compared
+- `reload2.log` / `reload2.progress` — the reload's findings and progress
+- `sets_after_rebuild2.psv` — the live tables after the reload, the input to the comparison
+- `fixtures_after_rebuild2.txt` — the full fixture output behind the `38 / 0` line
+
+### What this does and does not change
+
+The blocker added at the end of the fast-forward readiness section —
+*"`build.py --reload` has to run again … the new `contract_period_invariant`
+fixture check fails until it does"* — is cleared. The database now holds the
+post-ruling build and the fixture suite passes against it.
+
+It does **not** change the pytest result recorded on 2026-09-17.
+`test_no_leaks.py::test_there_are_files_to_check` still fails, because
+`facts/vouchers/samples/` and `exports/` are still absent from the tree;
+the reload writes tables, not artifacts. That failure clears at step 5,
+when the artifacts are regenerated against the populated allowlist.
+
+### Readiness
+
+**NOT READY.** This supersedes the readiness line of 2026-09-17 above.
+
+- Condition 1 — the history rewrite run and verified: **satisfied**, 2026-09-17, all five checks.
+- The reload requirement — `build.py --reload` run again after the period rulings: **satisfied**, 2026-09-18, all seven gates.
+- Condition 2 — the allowlist populated, the artifacts regenerated against it and committed: **outstanding**. This is the only thing left, and it starts with a decision rather than a command: which organisations in `reports/withheld-payees-2026-09-16.csv` to publish.
+
+When condition 2 is done, the pytest line is expected to return
+`386 passed, 0 failed, 0 skipped` — and, for the first time since the
+rewrite, the leak control will be passing over real files rather than
+vacuously.

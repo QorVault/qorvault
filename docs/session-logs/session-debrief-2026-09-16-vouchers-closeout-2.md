@@ -24,7 +24,10 @@ after regeneration, on **one** — in a description column, on a row whose
 payee is a company that is legitimately published. That is open finding C3,
 which is the operator's to rule on, so the artifacts were not committed.
 
-**Readiness: NOT READY for fast-forward.** See the readiness line below.
+**Readiness: NOT READY for fast-forward** as of 2026-09-16. **Superseded —
+READY FOR FAST-FORWARD as of 2026-09-18, commit `646e67e`.** See
+"Allowlist round 1 — 2026-09-18" at the end of this document for the
+current line and the operator's commands.
 
 **Update, later the same day.** The operator ruled on all four open
 questions and the rulings are implemented in a second commit. What changed:
@@ -1270,3 +1273,209 @@ When condition 2 is done, the pytest line is expected to return
 `386 passed, 0 failed, 0 skipped` — and, for the first time since the
 rewrite, the leak control will be passing over real files rather than
 vacuously.
+
+## Allowlist round 1 — 2026-09-18
+
+The operator ruled on the top 150 rows of `reports/withheld-payees-2026-09-16.csv`:
+**117 organisations approved**, every personal name held, and three
+organisations — `Chapter 13 Trustee`, `Support Payment Clearinghouse`,
+`Montana CSED SDU` — held pending a description review (below). The 117 were
+written into `facts/vouchers/fixtures/payee_allowlist.txt` verbatim, one per
+line, below the header; the header was not edited.
+
+### What was released
+
+Every one of the 117 entries resolves under `normalize_vendor()` to
+**exactly one** payee identity in `facts.vendor` — zero resolve to none, zero
+to more than one — and **none** has a `Payroll Handwrite` description on its
+own lines, so the stop rule did not fire and nothing was left out. All 117 sit
+in worksheet rows 1–146. The loader reads back 117 keys; `KCDA` is in,
+`KCDA Warehouse` is not.
+
+Corpus-wide the 117 release **178,903 of the 241,608 withheld lines (74.0%)**.
+Per 2026 cycle, counted the way `export_cycle.py` counts (with the watch
+list), allowlist empty → populated:
+
+| Cycle | Payees | Lines | Withheld payees | Withheld lines | Released |
+|---|---:|---:|---|---|---|
+| 2026-01-14 | 654 | 4,313 | 360 → 302 | 1,980 → 436 | 58 payees, 1,544 lines |
+| 2026-02-11 | 336 | 2,455 | 134 → 92 | 1,161 → 115 | 42 payees, 1,046 lines |
+| 2026-03-25 | 481 | 2,898 | 272 → 228 | 1,604 → 307 | 44 payees, 1,297 lines |
+| 2026-05-27 | 546 | 4,100 | 305 → 259 | 1,909 → 389 | 46 payees, 1,520 lines |
+| 2026-06-24 | 470 | 2,944 | 244 → 198 | 1,369 → 251 | 46 payees, 1,118 lines |
+| 2026-07-22 | 473 | 2,714 | 262 → 216 | 1,204 → 271 | 46 payees, 933 lines |
+| 2026-08-26 | 522 | 1,731 | 324 → 283 | 808 → 343 | 41 payees, 465 lines |
+| **2026 total** | 3,482 | 21,155 | 1,901 → 1,578 | 10,035 → 2,112 | 323 payees, 7,923 lines |
+
+The "after" column is the figure each regenerated export prints in its own
+"payee(s) … are withheld" line — 228, 259, 198, 216, 283 — so the two
+computations agree. What remains withheld in 2026 is now ~10% of lines,
+which is the individuals plus the long tail the second pass addresses.
+
+### Step 2 — reviews before regeneration (read-only; counts only)
+
+Method for the name check: the writers' own `WithheldNameIndex`, built from
+the post-allowlist view with the watch list — the same matcher the leak test
+uses — plus a deliberately looser upper bound (any surname token from any
+person-shaped withheld payee, 2,405 tokens). Identifier patterns were
+required to carry a digit; a first draft that did not flagged 318 IRS lines
+on an alphabetic word and was corrected before anything was recorded.
+
+| Payee | Lines | Distinct descriptions | Withheld-name hits (index / upper bound) | Identifier patterns |
+|---|---:|---:|---|---|
+| Internal Revenue Svc | 321 | 12 | **0 / 0** | none; 310 of 321 are the same two-word shape; 3 lines carry a levy/garnishment keyword |
+| Chapter 13 Trustee | 215 | 16 | **0 / 0** | **9 lines carry `#` + six digits** (case-number shape); 11 lines carry a bankruptcy/chapter-13 keyword; 10 lines carry a 3-letter+2-digit code followed by a date |
+| Support Payment Clearinghouse | 168 | 25 | **0 / 0** | no digit-bearing identifier other than dates; 22 lines carry a support-order keyword; 19 lines carry the same coded prefix + date |
+| Montana CSED SDU | 198 | 3 | **0 / 0** | none; 196 of 198 are the same two-word shape |
+
+**(a)** IRS: no description names a withheld payee. It is on the approved list and is now published.
+**(b)** None of the three held organisations' descriptions names a withheld payee. `Chapter 13 Trustee` is the one that carries an employee-identifier pattern: nine lines with a hash-prefixed six-digit number. The other two carry keywords that say what the payment is (support order, garnishment) but no number. The descriptions are masked in every published artifact regardless; the question for the operator is only whether the *payee name* itself, next to a masked description, is acceptable. No decision was made; all three remain withheld.
+**(c)** Public officials. `facts.attendance.director_norm` is **NULL on all 3,515 rows** (anomaly, minutes layer, not touched). Surnames were derived from `director_raw` by a stated rule set (collapse whitespace; cut at `:`/`(`/`*`; split on " and "; drop student-representative and superintendent rows; strip President/Vice President/Director/Member; last token; keep if the row has an officer role or the surname appears on ≥2 rows). **25 surnames.** Grepping the withheld worksheet on each: **154 rows** match a surname; **19 rows across 17 surnames** match a director's given name *and* surname (Tier 1, 63 lines), of which **3 carry Payroll Handwrite** and so cannot be released by allowlist at all. The other 135 are surname-only matches — five common surnames account for 108 of them — and are overwhelmingly not the director. The rows, tiered, are in
+`reports/withheld-payees-officials-2026-09-18.csv` (ignored by
+`.gitignore:89`; it names individuals). **Nothing was added to the allowlist from this.** The names were printed to the operator's terminal as instructed and therefore now sit in this session's Claude Code transcript — see Open items.
+
+### Step 3 — regeneration
+
+- `stash@{0}` (`db3cb06c`, "regenerated artifacts pre-rewrite", 38 files, nothing outside `samples/` and `exports/`) dropped by SHA. The three other stash entries belong to other branches and were not touched.
+- `samples.py` wrote **32** sample files (the 28 the stash held plus the four that had been moved to `~/redaction-scratch/`, regenerated from the database, not restored from scratch). `export_cycle.py` wrote **10** export files for the five cycles, positional date.
+- **Masked names per export: 0, 0, 0, 0, 0** (2026-03-25 … 2026-08-26). No withheld name appeared in any export's free text; every withheld payee is replaced in the payee column before rendering, so the masker had nothing left to catch.
+- Withheld-label occurrences per sample file range from 0 (Capital, Permanent, Transportation) to 342 (2026-01-14 ACH).
+- **Leak test: `test_no_leaks.py` — 2 passed**, over 42 real files, with the withheld index at 10,447 names. For the first time since the rewrite the HARD control is passing on evidence rather than vacuously.
+
+### The pytest line — FAILED the stated condition first, then passed after a ruling
+
+```
+4 failed, 382 passed in 12.23s
+```
+
+```
+test_parsers.py::TestVendorRules::test_a_bare_acronym_is_no_longer_exportable
+test_payees.py::TestWithholdingIsTheDefault::test_organizations_without_a_marker_are_withheld[KCDA]
+test_payees.py::TestWithholdingIsTheDefault::test_organizations_without_a_marker_are_withheld[Teamsters]
+test_payees.py::TestPayeeAllowlist::test_the_packaged_allowlist_ships_empty
+```
+
+All four encode the pre-population state. The fourth asserts the packaged
+allowlist is empty — its docstring: *"If this fails, read the diff before
+the code: someone added a payee."* Someone did: the operator, via this
+session, 117 of them. The other three call `is_exportable("KCDA")` and
+`is_exportable("Teamsters")` with no allowlist path, so they read the
+packaged file — and `KCDA` and `Teamsters` are both on the approved list.
+`AFSCME` and `Robert Half` in the same parametrised test still pass because
+they are not.
+
+**This is the guard doing what it was built to do, not a defect in the
+allowlist.** The suite still holds 386 tests; none were lost. But 386/0/0
+was the commit condition, so **nothing was committed**: the allowlist is
+modified and unstaged, the 42 artifacts are untracked. Rewriting a test whose
+stated purpose is to make an agent's addition of names visible is not a
+decision for the agent that added them.
+
+What the fix looks like — **ruled approved by the operator on 2026-09-18
+and applied in the same session**:
+
+1. `test_the_packaged_allowlist_ships_empty` → replace with a HARD test that
+   the packaged allowlist holds exactly the operator's 117 keys, that each
+   resolves to exactly one payee identity, and that none carries Payroll
+   Handwrite. That keeps the guard — an agent adding a 118th name fails it —
+   and stops asserting a state that is no longer true.
+2. The three example tests → point them at an empty temporary allowlist
+   (`monkeypatch.setattr(vendors, "PAYEE_ALLOWLIST_PATH", …)` plus
+   `load_payee_allowlist.cache_clear()`), so they test the *rule* and not
+   the packaged file. `TestPayeeAllowlist` already does this for its own
+   cases; these three predate it.
+
+Test count stays 386. Both were applied exactly as described: the guard
+is now `test_the_packaged_allowlist_is_exactly_the_operators_ruling`, with
+the 117 keys as a `frozenset` literal in `test_payees.py` — two independent
+statements of the same list that the test requires to agree — and a
+corpus-backed second half that SKIPS rather than passes without a database.
+A negative control was run before committing: a copy of the allowlist with
+a 118th line fails the guard on the count. The three example tests
+`monkeypatch` `vendors.PAYEE_ALLOWLIST_PATH` to an empty temporary file.
+
+```
+386 passed in 13.25s        # 0 failed, 0 skipped; 386 collected
+```
+
+The stale allowlist header was rewritten in the same ruling: it no longer
+says the file is empty, it names the round-1 decision and the test that
+pins it, and its AFTER EDITING block now calls `export_cycle.py "$d"`
+(positional) and runs the whole suite.
+
+### The commit
+
+**`646e67e`** — `feat: publish 2026 voucher samples and cycle exports with
+117 operator-allowlisted payees`. Signed (`git verify-commit`: good ED25519
+signature); all fourteen pre-commit hooks passed, none bypassed. 45 files:
+the allowlist, `test_payees.py`, `test_parsers.py`, 32 samples, 10 exports.
+No `reports/withheld-payees-*.csv` in the index (checked before committing).
+The release figures above are in the commit message. Branch is 19 ahead of
+`main`, 0 behind.
+
+### Step 4 — second-pass worksheet
+
+`reports/withheld-payees-pass2-2026-09-18.csv` (ignored; names individuals)
+covers worksheet rows **151–500** — 350 payees, 33 to 108 lines each, every
+one still withheld under the populated allowlist, line counts and Payroll
+Handwrite flags re-checked live with **0** mismatches. Its `PROPOSED` column
+is decided by the rule set printed in the file's header — Payroll Handwrite ⇒
+PERSON; comma-inverted shape ⇒ PERSON (UNSURE if an organisation fragment is
+also present); a business-marker fragment from the classifier's own
+`NON_PERSONAL_CHAR_RX` / `ORG_WORDS` / `CORPORATE_SUFFIX_RX` vocabularies ⇒
+ORG; all-caps single token ⇒ ORG; else UNSURE. The `rule` column prints the
+exact token each verdict fired on.
+
+| PROPOSED | Payees | Lines | Notes |
+|---|---:|---:|---|
+| ORG | 81 | 5,044 | 11 by character, 51 by word, 3 by suffix, 16 bare acronyms (5 of those from the 2005–2008 all-caps listings) |
+| PERSON | 39 | 1,879 | all 39 by Payroll Handwrite; none was comma-inverted — rows 151–500 hold no `person_shaped` payees |
+| UNSURE | 230 | 13,779 | 155 are two Titlecase tokens (the "Given Surname" shape no deterministic rule separates from a two-word company) |
+
+Known false-positive class, flagged in the header: an `ORG_WORDS` token that
+is also a name (Charity, Glass, Arch, Lodge …) fires the word rule; **11 of
+the 51** word-rule rows are two Titlecase tokens and want a look. The
+worksheet proposes; it decides nothing and feeds nothing.
+
+### Open items added this session
+
+- ~~Four tests encode the empty-allowlist state~~ — **ruled and fixed in `646e67e`**, see above.
+- ~~`payee_allowlist.txt` header is stale~~ — **rewritten in `646e67e`**.
+- **Adding a payee now takes two edits**: the allowlist line and the `ROUND_1_ALLOWLIST_KEYS` literal in `test_payees.py`. That is the guard working as designed, and the header says so, but it is worth knowing before round 2.
+- **`facts.attendance.director_norm` is NULL on every row** (3,515). Minutes layer; not in this session's write scope.
+- **This session's Claude Code transcript names individuals.** Step 2c required the matching worksheet rows to be printed, and they were. The name sweep procedure of 2026-09-17 applies to `~/.claude/projects/-home-donald-workspace/*.jsonl` for this session.
+- `~/redaction-scratch/` still exists (four superseded sample files). Its removal is in the deferred block and was not run.
+- Two new ignored worksheets under `reports/`: `withheld-payees-officials-2026-09-18.csv`, `withheld-payees-pass2-2026-09-18.csv`. Both name individuals; both are caught by `.gitignore:89`.
+
+### Readiness
+
+**READY FOR FAST-FORWARD.** This supersedes the readiness line of
+2026-09-18 above and every earlier one.
+
+- Condition 1, the history rewrite: satisfied (2026-09-17, five verifications).
+- The reload: satisfied (2026-09-18 09:07, seven gates).
+- Condition 2, the allowlist populated, the artifacts regenerated against it and committed: **satisfied, `646e67e`.** Suite 386 passed / 0 failed / 0 skipped with the database; leak test passing over 42 real files against a 10,447-name withheld index; masked names per export 0.
+
+The operator's commands, in order. The target is `main` (`29557ed`), this
+branch's merge-base; the branch is **20 ahead and 0 behind** once the
+docs commit recording this section lands, so the fast-forward is clean:
+
+```bash
+cd ~/workspace/projects/ksd-vouchers
+git log --oneline main..claude/facts-vouchers | wc -l    # 20
+git rev-list --count claude/facts-vouchers..main         # must print 0
+git checkout main && git merge --ff-only claude/facts-vouchers && git checkout claude/facts-vouchers
+
+# then, and only then — the deferred block (git stash drop is already done)
+cd facts/vouchers && VOUCHERS_DB_TRANSPORT=podman .venv/bin/python -m pytest -q -rs   # 386 passed, 0 failed, 0 skipped
+cd ~/workspace/projects/ksd-vouchers
+git tag -d pre-redaction-2026-09-16
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+rm -f ~/redaction-subs.tsv ~/redact_stream.py ~/redact-index-filter.sh
+rm -rf ~/redaction-scratch
+```
+
+`main` is checked out in no worktree (`git worktree list`), so the checkout
+above does not collide with another session. `no-commit-to-branch` in
+pre-commit blocks commits on `main`, not fast-forwards.

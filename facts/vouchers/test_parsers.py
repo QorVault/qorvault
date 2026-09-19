@@ -11,6 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+import vendors
 from build import PCARD_PREFIX, SENTINEL_CHECK_NUMBERS, SetRow, mark_cumulative, summarize
 from parsers import (
     ROW_RX_CHECK_FIRST,
@@ -29,6 +30,7 @@ from vendors import (
     is_exportable,
     is_organization,
     is_person_shaped,
+    load_payee_allowlist,
     normalize_vendor,
 )
 
@@ -485,16 +487,20 @@ class TestVendorRules:
         """Names carrying a business marker may be published."""
         assert is_exportable(raw)
 
-    def test_a_bare_acronym_is_no_longer_exportable(self):
-        """KCDA is a purchasing cooperative and is now withheld.
+    def test_a_bare_acronym_is_no_longer_exportable(self, monkeypatch, tmp_path):
+        """KCDA is a purchasing cooperative and the rule withholds it.
 
         The classifier is a marker list, and a bare acronym carries no
         marker. The old rule published any single all-caps token; 116
         payees in this corpus qualified that way. Withholding them is the
         safe direction and is what the specified rule does, but it is a
-        real loss of context and is raised for the operator in the
-        close-out report rather than quietly restored here.
+        real loss of context and was raised for the operator in the
+        close-out report rather than quietly restored here. The operator
+        allowlisted KCDA on 2026-09-18, so this test -- which is about the
+        rule, not the operator's file -- reads an empty allowlist.
         """
+        monkeypatch.setattr(vendors, "PAYEE_ALLOWLIST_PATH", str(tmp_path / "empty-allowlist.txt"))
+        load_payee_allowlist.cache_clear()
         assert not is_exportable("KCDA")
         assert is_exportable("KCDA", frozenset({normalize_vendor("KCDA")}))
 

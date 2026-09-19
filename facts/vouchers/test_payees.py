@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+import vendors
 from vendors import (
     BUSINESS_MARKERS,
     NAME_SUFFIXES,
@@ -63,6 +64,143 @@ PAYEES_SQL = """
                    WHERE l.vendor_norm = v.vendor_norm
                      AND l.description ~* 'payroll\\s+handwrite') AS payroll_handwrite
     FROM facts.vendor v
+"""
+
+# The operator's round-1 ruling of 2026-09-18, as normalize_vendor() keys.
+# Two independent statements of the same 117 names: this literal and
+# fixtures/payee_allowlist.txt. The HARD test below requires them to agree.
+ROUND_1_ALLOWLIST_KEYS = frozenset(
+    (
+        "adi",
+        "aft kent classified",
+        "air tec",
+        "amazon.com",
+        "amer red cross health & safety svcs",
+        "aquaphoenix scientific",
+        "awsl",
+        "awsp",
+        "bank of america",
+        "beeline charters & tours",
+        "blazerworks",
+        "blick art materials",
+        "brooks powers group",
+        "cedar grove organic recy",
+        "cedar river water & sewer dist",
+        "cengage learning/gale",
+        "central wa univ",
+        "charlie's produce",
+        "childrens inst for lrning diff",
+        "clay-king.com",
+        "coeur d'alene baking",
+        "comcast",
+        "commercial filter sales & svc",
+        "consolidated electrical distr",
+        "consolidated press printing in",
+        "consolidated tech svcs",
+        "costco",
+        "costco wholesale",
+        "curran law firm ps",
+        "davis piano svc",
+        "deca",
+        "drug free business",
+        "ek beverage",
+        "everdriven",
+        "ewebanks creations",
+        "fifth third bank",
+        "fire king of seattle",
+        "first choice health network",
+        "flohawks",
+        "food svcs of amer",
+        "fred meyer",
+        "george white location photo",
+        "girard res & recycling",
+        "gopher sports",
+        "greater seattle volleyball",
+        "hca-sebb benefits",
+        "hca-sebb flex spend",
+        "helmsman mgmt svcs",
+        "home depot",
+        "home depot credit svc",
+        "hutteball & oremus arch",
+        "iml security supply",
+        "imperial dade west coast",
+        "internal revenue svc",
+        "intl baccalaureate",
+        "jgm consulting",
+        "johnsons home & garden",
+        "kc finance div a/r",
+        "kcaba",
+        "kcda",
+        "kea",
+        "kea substitutes",
+        "kent youth & family svcs",
+        "king & bunnys appliances",
+        "kyocera document sol nw",
+        "lakeshore learning materials",
+        "multicare ctrs of occupational medicine",
+        "music and arts",
+        "music trader",
+        "oetc",
+        "office depot",
+        "ospi - child nutrition svcs",
+        "ospi - fiscal office",
+        "pacific lutheran univ",
+        "pape kenworth nw",
+        "patterson buchanan fobes/leitc",
+        "pearson assessments",
+        "photo warehouse",
+        "pitney bowes purchase power",
+        "platinum packaging grp",
+        "premier coaches nw",
+        "puget sound energy",
+        "qfc customer charges",
+        "republic svcs-#176/183",
+        "rich's 5 star pizza",
+        "riverside insights",
+        "safeway stores",
+        "sch outfitters",
+        "scr architects",
+        "sierra martin architects",
+        "skillpath seminars",
+        "smith brothers farms",
+        "snider petroleum",
+        "soccer.com",
+        "soos creek water & sewer",
+        "spectrum psychological svcs",
+        "st auditors office",
+        "staples advantage",
+        "teamsters",
+        "united way of king cty-pledge accting",
+        "univ of wa",
+        "us foods - seattle",
+        "us postal svc",
+        "valley cities counseling & consultation",
+        "verizon wireless",
+        "vestis",
+        "wa behavior specialists",
+        "wa st patrol",
+        "wasbo",
+        "waste mgmt of seattle",
+        "wea payroll deductions",
+        "wells fargo financial leasing",
+        "west central dist iii",
+        "western conf of teamsters pension trust",
+        "wiaa",
+        "wsipc",
+        "wspa",
+    )
+)
+
+# The same flags PAYEES_SQL carries, for the allowlisted payees only. vendor_norm
+# is the table's primary key and is computed by the rule normalize_vendor()
+# implements, so one key present means exactly one payee identity.
+ALLOWLIST_PAYEES_SQL = """
+    SELECT v.vendor_norm,
+           EXISTS (SELECT 1 FROM facts.voucher_line l
+                   WHERE l.vendor_norm = v.vendor_norm
+                     AND l.description ~* 'payroll\\s+handwrite') AS payroll_handwrite
+    FROM facts.vendor v
+    WHERE v.vendor_norm = ANY(%s)
 """
 
 
@@ -395,14 +533,18 @@ class TestWithholdingIsTheDefault:
         assert publishable_name(raw) == WITHHELD_LABEL
 
     @pytest.mark.parametrize("raw", ["KCDA", "AFSCME", "Teamsters", "Robert Half"])
-    def test_organizations_without_a_marker_are_withheld(self, raw):
+    def test_organizations_without_a_marker_are_withheld(self, raw, monkeypatch, tmp_path):
         """Being obviously a company is not the test; carrying a marker is.
 
-        All four are organizations and all four are withheld. That is the
-        cost side of the allow-list, and it is the side that is safe to be
-        wrong on. The allowlist and the watch list are how the operator
-        publishes one anyway.
+        All four are organizations and all four are withheld by the rule.
+        That is the cost side of the allow-list, and it is the side that is
+        safe to be wrong on. The allowlist and the watch list are how the
+        operator publishes one anyway -- and since 2026-09-18 the operator
+        has, for two of these four. This test is about the rule, not the
+        operator's file, so it reads an empty allowlist.
         """
+        monkeypatch.setattr(vendors, "PAYEE_ALLOWLIST_PATH", str(tmp_path / "empty-allowlist.txt"))
+        load_payee_allowlist.cache_clear()
         assert not is_exportable(raw)
         assert is_exportable(raw, frozenset({normalize_vendor(raw)}))
 
@@ -411,7 +553,7 @@ class TestPayeeAllowlist:
     """The operator's allowlist file: what it releases and what it cannot.
 
     Every test here writes its own temporary file. None of them reads or
-    edits the packaged allowlist, except the one that asserts it is empty.
+    edits the packaged allowlist, except the one that pins its contents.
     """
 
     @staticmethod
@@ -430,15 +572,43 @@ class TestPayeeAllowlist:
         load_payee_allowlist.cache_clear()
         return str(path)
 
-    def test_the_packaged_allowlist_ships_empty(self):
-        """HARD: nothing is published by default.
+    def test_the_packaged_allowlist_is_exactly_the_operators_ruling(self):
+        """HARD: the packaged allowlist is the operator's 117, each one payee, none an employee.
 
-        An allowlist that arrived with entries in it would be an agent
-        deciding to publish names. If this fails, read the diff before the
-        code: someone added a payee.
+        Until 2026-09-18 this test asserted the file was empty: an allowlist
+        that arrived with entries in it would have been an agent deciding to
+        publish names. The operator has since ruled on the top 150 withheld
+        payees and approved these 117 organisations, so the guard now pins
+        that exact set instead. If this fails, read the diff before the
+        code: someone added, removed or respelled a payee, and that is a
+        decision for the operator, not a fix for the test.
+
+        The second half needs the corpus: every key must name exactly one
+        payee identity in ``facts.vendor``, and none of them may carry a
+        ``Payroll Handwrite`` line, because the classifier would withhold
+        such a payee anyway and the allowlist would be lying about what it
+        releases. Without a database that half cannot run and the test
+        SKIPS rather than passes -- treat a skip here as a stop condition.
         """
         load_payee_allowlist.cache_clear()
-        assert load_payee_allowlist(PAYEE_ALLOWLIST_PATH) == frozenset()
+        keys = load_payee_allowlist(PAYEE_ALLOWLIST_PATH)
+        assert len(keys) == 117, f"the packaged allowlist holds {len(keys)} keys, not 117"
+        assert (
+            keys == ROUND_1_ALLOWLIST_KEYS
+        ), f"added: {sorted(keys - ROUND_1_ALLOWLIST_KEYS)}  removed: {sorted(ROUND_1_ALLOWLIST_KEYS - keys)}"
+        try:
+            import db
+
+            rows = db.query_dicts(ALLOWLIST_PAYEES_SQL, (sorted(keys),))
+        except Exception as exc:  # noqa: BLE001 - absence of a database is not a failure here
+            pytest.skip(
+                f"no database connection, so the allowlist resolution check did not run: {type(exc).__name__}: {exc}"
+            )
+        found = {row["vendor_norm"] for row in rows}
+        assert found == keys, f"allowlist entries that name no payee identity: {sorted(keys - found)}"
+        assert len(rows) == 117, "a vendor_norm key resolved to more than one row; the primary key is broken"
+        employees = sorted(row["vendor_norm"] for row in rows if row["payroll_handwrite"])
+        assert not employees, f"allowlisted payees with a Payroll Handwrite line: {employees}"
 
     def test_an_entry_publishes_a_payee_that_carries_no_marker(self, tmp_path):
         """The whole point: release a bare acronym without widening a rule."""

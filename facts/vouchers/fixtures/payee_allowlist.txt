@@ -1,9 +1,13 @@
 # Payee allowlist — exact payee strings the operator has decided are
 # organizations and may be published by name.
 #
-# THIS FILE IS EMPTY ON PURPOSE. It was created as a scaffold and must be
-# populated by the operator, not by an agent. Every entry is a decision to
-# publish a name, and that decision is not a machine's to make.
+# EVERY ENTRY HERE IS AN OPERATOR DECISION. The file shipped empty as a
+# scaffold; on 2026-09-18 the operator ruled on the top 150 withheld payees
+# and approved the 117 organisations below (round 1). Every personal name
+# in that range was held, as were three organisations pending review. No
+# agent decides who is a business: an agent writes the operator's list and
+# nothing else. test_payees.py pins this file to exactly those 117 keys,
+# so an unreviewed addition, removal or respelling fails the suite.
 #
 # FORMAT
 #   One payee string per line, exactly as it is printed on the voucher
@@ -41,8 +45,126 @@
 #   cd facts/vouchers
 #   VOUCHERS_DB_TRANSPORT=podman .venv/bin/python samples.py
 #   for d in 2026-03-25 2026-05-27 2026-06-24 2026-07-22 2026-08-26; do
-#     VOUCHERS_DB_TRANSPORT=podman .venv/bin/python export_cycle.py --date "$d"
+#     VOUCHERS_DB_TRANSPORT=podman .venv/bin/python export_cycle.py "$d"   # positional; --date does not exist
 #   done
-#   VOUCHERS_DB_TRANSPORT=podman .venv/bin/python -m pytest -q -rs test_no_leaks.py
+#   VOUCHERS_DB_TRANSPORT=podman .venv/bin/python -m pytest -q -rs         # whole suite: 386 passed, 0 skipped
+#   then update ROUND_1_ALLOWLIST_KEYS in test_payees.py to the new set.
 #
 # --- entries below this line ---
+BANK OF AMERICA
+Amazon.Com
+KCDA
+US Foods - Seattle
+Home Depot Credit Svc
+PUGET SOUND ENERGY
+BlazerWorks
+Childrens Inst for Lrning Diff
+OFFICE DEPOT
+Staples Advantage
+Food Svcs of Amer
+Consolidated Electrical Distr
+SAFEWAY STORES
+SOOS CREEK WATER & SEWER
+Home Depot
+Kent Youth & Family Svcs
+CURRAN LAW FIRM PS
+Commercial Filter Sales & Svc
+Valley Cities Counseling & Consultation
+Fred Meyer
+WSIPC
+VERIZON WIRELESS
+Kyocera Document Sol NW
+HCA-SEBB BENEFITS
+Waste Mgmt of Seattle
+Coeur D'Alene Baking
+Smith Brothers Farms
+Costco Wholesale
+EK Beverage
+COMCAST
+Sierra Martin Architects
+WA ST Patrol
+AWSP
+Republic Svcs-#176/183
+Hutteball & Oremus Arch
+JOHNSONS HOME & GARDEN
+Patterson Buchanan Fobes/Leitc
+Western Conf of Teamsters Pension Trust
+Charlie's Produce
+Costco
+Rich's 5 Star Pizza
+Gopher Sports
+WIAA
+HCA-SEBB FLEX SPEND
+Premier Coaches NW
+Internal Revenue Svc
+SNIDER PETROLEUM
+Cedar River Water & Sewer Dist
+Fire King of Seattle
+Wells Fargo Financial Leasing
+KEA
+SCR Architects
+Pape Kenworth NW
+AFT Kent Classified
+LAKESHORE LEARNING MATERIALS
+FloHawks
+JGM Consulting
+Brooks Powers Group
+Music and Arts
+Pitney Bowes Purchase Power
+Amer Red Cross Health & Safety Svcs
+Teamsters
+WEA Payroll Deductions
+WASBO
+OSPI - Child Nutrition Svcs
+Consolidated Press Printing In
+Consolidated Tech Svcs
+KEA Substitutes
+IML Security Supply
+Spectrum Psychological Svcs
+Everdriven
+OSPI - Fiscal Office
+West Central Dist III
+Univ of WA
+First Choice Health Network
+Beeline Charters & Tours
+George White Location Photo
+Girard Res & Recycling
+AWSL
+AquaPhoenix Scientific
+OETC
+SkillPath Seminars
+Intl Baccalaureate
+WA BEHAVIOR SPECIALISTS
+Music Trader
+Fifth Third Bank
+ADI
+KC Finance Div A/R
+Riverside Insights
+Helmsman Mgmt Svcs
+Cedar Grove Organic Recy
+MultiCare Ctrs of Occupational Medicine
+Pearson Assessments
+KCABA
+DECA
+US Postal Svc
+Central WA Univ
+Drug Free Business
+IMPERIAL DADE WEST COAST
+King & Bunnys Appliances
+Davis Piano Svc
+Clay-King.com
+QFC Customer Charges
+Greater Seattle Volleyball
+Blick Art Materials
+WSPA
+Air Tec
+Platinum Packaging Grp
+Cengage Learning/Gale
+Ewebanks Creations
+Pacific Lutheran Univ
+St Auditors Office
+UNITED WAY OF KING CTY-PLEDGE ACCTING
+Sch Outfitters
+VESTIS
+Soccer.com
+PHOTO WAREHOUSE

@@ -1,0 +1,179 @@
+section,key,fund,value,detail
+set_total,2026-05-27,ACH,9394987.52,stated=9394987.52;status=reconciled;lines=2189;checks=407;hash_total=3710293136538
+set_total,2026-05-27,ASB,181039.41,stated=181039.41;status=reconciled;lines=316;checks=100;hash_total=64886905772
+set_total,2026-05-27,Capital,1047509.82,stated=1047509.82;status=reconciled;lines=39;checks=27;hash_total=9267431459
+set_total,2026-05-27,GF,3388060.86,stated=3388060.86;status=reconciled;lines=1555;checks=350;hash_total=65034344695
+set_total,2026-05-27,Transportation,173922.13,stated=173922.13;status=reconciled;lines=1;checks=1;hash_total=900062
+register_crosscheck,2026-05-27,ACH,0.00,basis=ap_direct_deposit;register=9394987.52;listing=9394987.52;reason=MATCH
+register_crosscheck,2026-05-27,ASB,1265.09,basis=warrants_plus_pcard;register=179774.32;listing=181039.41;reason=REGISTER_MISMATCH
+register_crosscheck,2026-05-27,Capital,0.00,basis=warrants_plus_pcard;register=1047509.82;listing=1047509.82;reason=MATCH
+register_crosscheck,2026-05-27,GF,4615.89,basis=warrants_plus_pcard;register=3383444.97;listing=3388060.86;reason=REGISTER_MISMATCH
+top_vendor,GREEN RIVER COLLEGE,,2988834.00,lines=1;checks=1;all_reconciled=True
+top_vendor,Puget Sound Energy,,948738.74,lines=20;checks=5;all_reconciled=True
+top_vendor,Sunburst Workforce Advisors LLC,,895265.97,lines=14;checks=6;all_reconciled=True
+top_vendor,Pac West Mechanical LLC,,648048.00,lines=1;checks=1;all_reconciled=True
+top_vendor,US Foods - Seattle,,449211.70,lines=24;checks=6;all_reconciled=True
+top_vendor,Bank Of America,,428682.04,lines=1222;checks=15;all_reconciled=True
+top_vendor,Everdriven Technologies LLC,,379989.98,lines=18;checks=5;all_reconciled=True
+top_vendor,AMAZON CAPITAL SERVICES,,347949.01,lines=1194;checks=6;all_reconciled=True
+top_vendor,Highline College,,341053.45,lines=2;checks=2;all_reconciled=True
+top_vendor,First Student Inc,,313731.10,lines=21;checks=5;all_reconciled=True
+top_vendor,GenCap Construction Corp,,310898.08,lines=1;checks=1;all_reconciled=True
+top_vendor,Bellevue College,,258963.34,lines=1;checks=1;all_reconciled=True
+top_vendor,KEA,,255633.94,lines=1;checks=1;all_reconciled=True
+top_vendor,Comm in Schs of Kent,,236185.60,lines=6;checks=3;all_reconciled=True
+top_vendor,City of Kent,,213367.43,lines=4;checks=3;all_reconciled=True
+top_vendor,Elevation Healthcare LLC,,181382.38,lines=12;checks=1;all_reconciled=True
+top_vendor,Schetky Northwest Sales Inc,,178313.90,lines=12;checks=5;all_reconciled=True
+top_vendor,Brink Electric LLC,,175578.00,lines=2;checks=1;all_reconciled=True
+top_vendor,CDW Government Inc,,150808.05,lines=3;checks=1;all_reconciled=True
+top_vendor,Republic Svcs-#176/183,,138483.66,lines=2;checks=2;all_reconciled=True
+top_vendor,Eagle Asphalt Sealcoating Co LLC,,127405.56,lines=3;checks=2;all_reconciled=True
+top_vendor,PetroCard Inc,,111597.58,lines=5;checks=3;all_reconciled=True
+top_vendor,GERSH ACADEMY SEATTLE LLC,,106300.64,lines=4;checks=1;all_reconciled=True
+top_vendor,WCP Sol Inc,,100982.68,lines=167;checks=6;all_reconciled=True
+top_vendor,Renton SD,,100451.16,lines=8;checks=2;all_reconciled=True
+watch_list,Sunburst Workforce Advisors,,610158.65,2025-04-23
+watch_list,Sunburst Workforce Advisors,,584420.74,2025-05-28
+watch_list,Sunburst Workforce Advisors,,392944.59,2025-06-25
+watch_list,Sunburst Workforce Advisors,,1249322.98,2025-07-23
+watch_list,Sunburst Workforce Advisors,,278180.58,2025-08-13
+watch_list,Sunburst Workforce Advisors,,26191.50,2025-09-24
+watch_list,Sunburst Workforce Advisors,,35486.75,2025-10-22
+watch_list,Sunburst Workforce Advisors,,1012574.33,2025-12-10
+watch_list,Sunburst Workforce Advisors,,398849.69,2026-01-14
+watch_list,Sunburst Workforce Advisors,,970495.51,2026-02-11
+watch_list,Sunburst Workforce Advisors,,722422.23,2026-03-25
+watch_list,Sunburst Workforce Advisors,,895265.97,2026-05-27
+watch_list,Elevation Healthcare,,24854.25,2025-04-23
+watch_list,Elevation Healthcare,,53335.50,2025-05-28
+watch_list,Elevation Healthcare,,37816.13,2025-07-23
+watch_list,Elevation Healthcare,,45525.32,2025-09-24
+watch_list,Elevation Healthcare,,38181.33,2025-12-10
+watch_list,Elevation Healthcare,,48085.50,2026-01-14
+watch_list,Elevation Healthcare,,197885.38,2026-02-11
+watch_list,Elevation Healthcare,,181382.38,2026-05-27
+watch_list,Blazerworks,,41483.75,2025-04-23
+watch_list,Blazerworks,,28680.00,2025-05-28
+watch_list,Blazerworks,,46870.00,2025-06-25
+watch_list,Blazerworks,,24565.00,2025-07-23
+watch_list,Blazerworks,,3386.25,2025-08-13
+watch_list,Blazerworks,,153034.27,2025-09-24
+watch_list,Blazerworks,,60884.50,2025-12-10
+watch_list,Blazerworks,,155824.22,2026-01-14
+watch_list,Blazerworks,,61566.30,2026-02-11
+watch_list,Blazerworks,,105425.90,2026-03-25
+watch_list,Blazerworks,,40500.25,2026-05-27
+watch_list,CBPI,,7335.70,2025-04-23
+watch_list,CBPI,,11095.40,2025-05-28
+watch_list,CBPI,,9467.10,2025-06-25
+watch_list,CBPI,,11555.60,2025-07-23
+watch_list,CBPI,,6931.80,2025-08-13
+watch_list,CBPI,,11782.85,2025-12-10
+watch_list,CBPI,,20094.40,2026-01-14
+watch_list,CBPI,,6948.75,2026-02-11
+watch_list,CBPI,,12303.75,2026-03-25
+watch_list,Positive Behavior Supports,,22398.75,2025-05-28
+watch_list,Positive Behavior Supports,,10822.50,2025-06-25
+watch_list,Positive Behavior Supports,,13162.50,2025-07-23
+watch_list,Positive Behavior Supports,,8235.00,2025-08-13
+watch_list,Robert Half,,23312.00,2025-08-13
+watch_list,Robert Half,,12152.00,2025-09-24
+watch_list,Robert Half,,9920.00,2025-10-22
+watch_list,Robert Half,,12400.00,2025-12-10
+watch_list,Robert Half,,22320.00,2026-01-14
+watch_list,Robert Half,,7477.20,2026-02-11
+watch_list,Robert Half,,12586.00,2026-03-25
+watch_list,Robert Half,,15888.57,2026-05-27
+watch_list,Pacifica Law Group,,38898.44,2025-04-23
+watch_list,Pacifica Law Group,,13594.00,2025-05-28
+watch_list,Pacifica Law Group,,38073.00,2025-06-25
+watch_list,Pacifica Law Group,,48453.50,2025-08-13
+watch_list,Pacifica Law Group,,79537.85,2025-09-24
+watch_list,Pacifica Law Group,,73021.05,2025-10-22
+watch_list,Pacifica Law Group,,41649.50,2025-12-10
+watch_list,Pacifica Law Group,,51466.50,2026-01-14
+watch_list,Pacifica Law Group,,73095.00,2026-02-11
+watch_list,Pacifica Law Group,,49461.50,2026-03-25
+watch_list,Pacifica Law Group,,65126.50,2026-05-27
+watch_list,Foster Garvey,,17843.62,2025-04-23
+watch_list,Foster Garvey,,20438.34,2025-05-28
+watch_list,Foster Garvey,,40533.55,2025-07-23
+watch_list,Foster Garvey,,27185.31,2025-08-13
+watch_list,Foster Garvey,,38916.01,2025-09-24
+watch_list,Foster Garvey,,52818.89,2025-10-22
+watch_list,Foster Garvey,,7064.91,2025-12-10
+watch_list,Foster Garvey,,251.73,2026-01-14
+watch_list,KCABA,,135993.75,2025-04-23
+watch_list,KCABA,,136143.75,2025-05-28
+watch_list,KCABA,,114712.50,2025-06-25
+watch_list,KCABA,,27375.00,2025-07-23
+watch_list,KCABA,,187931.25,2025-08-13
+watch_list,KCABA,,25126.35,2025-09-24
+watch_list,KCABA,,166031.25,2025-12-10
+watch_list,KCABA,,255168.75,2026-01-14
+watch_list,KCABA,,63262.50,2026-02-11
+watch_list,KCABA,,144656.25,2026-03-25
+watch_list,Gersh Academy,,74290.72,2025-04-23
+watch_list,Gersh Academy,,88128.90,2025-05-28
+watch_list,Gersh Academy,,83354.72,2025-06-25
+watch_list,Gersh Academy,,102706.77,2025-07-23
+watch_list,Gersh Academy,,78866.78,2025-08-13
+watch_list,Gersh Academy,,213993.10,2025-09-24
+watch_list,Gersh Academy,,53327.50,2025-10-22
+watch_list,Gersh Academy,,91236.50,2025-12-10
+watch_list,Gersh Academy,,185748.46,2026-01-14
+watch_list,Gersh Academy,,71464.16,2026-02-11
+watch_list,Gersh Academy,,90329.66,2026-03-25
+watch_list,Gersh Academy,,106300.64,2026-05-27
+watch_list,Renton SD,,54749.41,2025-04-23
+watch_list,Renton SD,,68297.09,2025-05-28
+watch_list,Renton SD,,60498.63,2025-06-25
+watch_list,Renton SD,,71110.05,2025-07-23
+watch_list,Renton SD,,67312.81,2025-08-13
+watch_list,Renton SD,,59547.51,2025-09-24
+watch_list,Renton SD,,92569.99,2025-12-10
+watch_list,Renton SD,,169155.57,2026-01-14
+watch_list,Renton SD,,71640.05,2026-02-11
+watch_list,Renton SD,,92105.18,2026-03-25
+watch_list,Renton SD,,100451.16,2026-05-27
+watch_list,Tacoma SD,,6046.44,2025-04-23
+watch_list,Tacoma SD,,14285.58,2025-05-28
+watch_list,Tacoma SD,,18810.05,2025-08-13
+watch_list,Tacoma SD,,291290.14,2025-09-24
+watch_list,Tacoma SD,,4900.11,2025-10-22
+watch_list,Tacoma SD,,5939.92,2025-12-10
+watch_list,Tacoma SD,,149140.20,2026-01-14
+watch_list,Tacoma SD,,9421.58,2026-02-11
+watch_list,Tacoma SD,,9878.56,2026-03-25
+watch_list,Yellow Wood Academy,,97411.00,2025-05-28
+watch_list,Yellow Wood Academy,,51504.67,2025-07-23
+watch_list,Yellow Wood Academy,,10077.00,2025-08-13
+watch_list,Yellow Wood Academy,,98968.27,2025-09-24
+watch_list,Yellow Wood Academy,,49848.40,2025-12-10
+watch_list,Yellow Wood Academy,,99696.80,2026-01-14
+watch_list,Yellow Wood Academy,,49848.40,2026-02-11
+watch_list,Yellow Wood Academy,,49848.40,2026-03-25
+watch_list,Yellow Wood Academy,,39166.60,2026-05-27
+watch_list,Hazel Health,,25000.00,2025-04-23
+watch_list,Hazel Health,,25000.00,2025-05-28
+watch_list,Hazel Health,,25000.00,2025-06-25
+watch_list,Hazel Health,,25000.00,2025-07-23
+watch_list,Hazel Health,,79166.67,2025-09-24
+watch_list,Hazel Health,,25000.00,2025-10-22
+watch_list,Hazel Health,,75000.00,2026-01-14
+watch_list,Hazel Health,,25000.00,2026-02-11
+watch_list,Hazel Health,,25000.00,2026-03-25
+watch_list,Hazel Health,,25000.00,2026-05-27
+watch_list,St Vincent de Paul,,28966.67,2025-04-23
+watch_list,St Vincent de Paul,,28966.67,2025-05-28
+watch_list,St Vincent de Paul,,28966.67,2025-06-25
+watch_list,St Vincent de Paul,,28966.67,2025-07-23
+watch_list,St Vincent de Paul,,28966.67,2025-08-13
+watch_list,St Vincent de Paul,,28966.67,2025-09-24
+watch_list,St Vincent de Paul,,28966.67,2025-10-22
+watch_list,St Vincent de Paul,,28966.67,2025-12-10
+watch_list,St Vincent de Paul,,57933.34,2026-01-14
+watch_list,St Vincent de Paul,,28966.67,2026-02-11
+watch_list,St Vincent de Paul,,28966.67,2026-03-25
+watch_list,St Vincent de Paul,,28966.67,2026-05-27

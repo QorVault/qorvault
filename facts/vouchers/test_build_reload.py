@@ -168,6 +168,12 @@ def _log(meeting_date: str, fund: str, **overrides) -> dict:
         status="parsed",
         lines_found=2,
         checks_found=2,
+        # NOT NULL DEFAULT 0 in the schema: an explicit NULL in an INSERT
+        # overrides the default, so the fixture must set them as the build does.
+        unread_lines=0,
+        regex_agree=0,
+        regex_disagree=0,
+        regex_miss=0,
         source="test",
     )
     row.update(overrides)

@@ -910,11 +910,210 @@ def _insert(cursor, schema: str, table: str, columns: tuple[str, ...], rows: lis
     psycopg2.extras.execute_values(cursor, statement.as_string(cursor), values, page_size=1000)
 
 
+# ---------------------------------------------------------- write path --
+#
+# Every table the reload path deletes, in delete order. The order matters:
+# lines and reconciliations reference sets, so they go first.
+FACT_TABLES: tuple[str, ...] = (
+    "voucher_reconciliation",
+    "voucher_line",
+    "voucher_set",
+    "vendor",
+    "voucher_parse_log",
+)
+
+# The tables a single meeting date owns a slice of. ``vendor`` is not here:
+# a vendor row aggregates every date it was ever paid on, so it has no
+# per-date slice and is rebuilt from all lines instead.
+DATE_SCOPED_TABLES: tuple[str, ...] = (
+    "voucher_reconciliation",
+    "voucher_line",
+    "voucher_set",
+    "voucher_parse_log",
+)
+
+
+class ReloadScopeError(RuntimeError):
+    """A reload was asked to delete more than the caller scoped it to."""
+
+
+@dataclass
+class FactsPayload:
+    """Everything one build run produced, ready to write."""
+
+    set_rows: list[dict]
+    lines: list[dict]
+    vendors: list[dict]
+    recon_rows: list[dict]
+    logs: list[dict]
+
+
+class PostgresStore:
+    """The ``facts`` schema behind a psycopg2 cursor.
+
+    Every statement here names a module-level table literal and binds its
+    values; nothing is string-formatted from input.
+    """
+
+    def __init__(self, cursor) -> None:
+        """Wrap an open psycopg2 cursor."""
+        self.cur = cursor
+
+    # -- writes ---------------------------------------------------------
+    def delete_all(self, table: str) -> None:
+        """Delete every row of one fact table."""
+        self.cur.execute(sql.SQL("DELETE FROM facts.{}").format(sql.Identifier(table)))
+
+    def delete_where_date(self, table: str, meeting_date: str) -> None:
+        """Delete one meeting date's rows from a table that carries ``meeting_date``."""
+        self.cur.execute(
+            sql.SQL("DELETE FROM facts.{} WHERE meeting_date = %s").format(sql.Identifier(table)),
+            (meeting_date,),
+        )
+
+    def delete_where_set_in(self, table: str, set_ids: list[str]) -> None:
+        """Delete the rows of the given sets from a table keyed by ``set_id``."""
+        if not set_ids:
+            return
+        self.cur.execute(
+            sql.SQL("DELETE FROM facts.{} WHERE set_id = ANY(%s)").format(sql.Identifier(table)),
+            (list(set_ids),),
+        )
+
+    def insert(self, table: str, columns: tuple[str, ...], rows: list[dict]) -> None:
+        """Insert rows, binding every value."""
+        _insert(self.cur, "facts", table, columns, rows)
+
+    # -- reads ----------------------------------------------------------
+    def set_ids_for_date(self, meeting_date: str) -> list[str]:
+        """The set ids stored for one meeting date."""
+        self.cur.execute(
+            "SELECT set_id FROM facts.voucher_set WHERE meeting_date = %s ORDER BY set_id", (meeting_date,)
+        )
+        return [row[0] for row in self.cur.fetchall()]
+
+    def lines_for_vendors(self) -> tuple[list[dict], dict[str, date]]:
+        """Every stored line, oldest set first, the way a full build meets them."""
+        self.cur.execute("SELECT set_id, meeting_date FROM facts.voucher_set")
+        set_dates = {set_id: when for set_id, when in self.cur.fetchall()}
+        columns = sql.SQL(", ").join(sql.SQL("l.") + sql.Identifier(column) for column in LINE_COLUMNS)
+        self.cur.execute(
+            sql.SQL(
+                "SELECT {} FROM facts.voucher_line l JOIN facts.voucher_set s USING (set_id) "
+                "ORDER BY s.meeting_date, l.set_id, l.line_seq"
+            ).format(columns)
+        )
+        lines = [dict(zip(LINE_COLUMNS, row, strict=True)) for row in self.cur.fetchall()]
+        return lines, set_dates
+
+    def vendor_tags(self) -> dict[str, tuple[str | None, str | None]]:
+        """Operator and LLM tags currently on vendors, by ``vendor_norm``."""
+        self.cur.execute(
+            "SELECT vendor_norm, category, tag_source FROM facts.vendor "
+            "WHERE category IS NOT NULL OR tag_source IS NOT NULL"
+        )
+        return {norm: (category, tag_source) for norm, category, tag_source in self.cur.fetchall()}
+
+
+VENDOR_COLUMNS_WITH_TAGS = (*VENDOR_COLUMNS, "category", "tag_source")
+
+
+def single_date_caveat(only_date: str) -> str:
+    """What a run confined to one meeting date cannot know.
+
+    ``mark_cumulative`` compares each set against every earlier set of the
+    same fund, and a single-date run holds only that date's sets, so the
+    cumulative-overlap note on the reloaded date's sets cannot fire. The
+    gap is named rather than left silent.
+    """
+    return (
+        f"note: --only-date {only_date} sees no earlier cycles, so the cumulative-overlap note "
+        f"on this date's sets is computed against nothing and will not fire even where a full "
+        f"build would record one."
+    )
+
+
+def _check_single_date_scope(payload: FactsPayload, only_date: str) -> None:
+    """Refuse, before anything is deleted, if the run cannot be confined to one date.
+
+    Raises:
+        ReloadScopeError: A fact table has no per-date strategy, or a payload
+            row belongs to another date.
+    """
+    unscoped = [t for t in FACT_TABLES if t not in DATE_SCOPED_TABLES and t != "vendor"]
+    if unscoped:
+        raise ReloadScopeError(
+            f"--reload --only-date cannot be confined to {only_date}: no per-date delete is defined for "
+            f"{', '.join(unscoped)}. Refusing rather than wiping every date."
+        )
+    stray_sets = sorted({r["meeting_date"] for r in payload.set_rows if r["meeting_date"] != only_date})
+    stray_logs = sorted({r["meeting_date"] for r in payload.logs if r["meeting_date"] not in (only_date, None)})
+    if stray_sets or stray_logs:
+        raise ReloadScopeError(
+            f"--only-date {only_date} but the run produced rows for {', '.join(stray_sets or stray_logs)}. Refusing."
+        )
+
+
+def write_facts(store, payload: FactsPayload, *, reload: bool, only_date: str | None) -> None:
+    """Write one build run's rows to the fact tables.
+
+    A full reload wipes every fact table and writes the run as given. A
+    reload confined to one meeting date deletes only that date's slice of
+    each date-scoped table, writes the run, and then rebuilds ``vendor``
+    from every line now stored -- a vendor row spans dates, so the only
+    correct vendor table after a partial reload is the one a full rebuild
+    would produce. Operator tags on vendors survive the rebuild.
+
+    Args:
+        store: A ``PostgresStore`` or anything with the same methods.
+        payload: The rows to write. ``payload.vendors`` is used as given on
+            a full reload and ignored on a single-date one.
+        reload: Delete before inserting.
+        only_date: The single meeting date this run was restricted to, if any.
+
+    Raises:
+        ReloadScopeError: A single-date reload cannot be confined to that date.
+    """
+    if reload and only_date:
+        _check_single_date_scope(payload, only_date)
+        old_sets = store.set_ids_for_date(only_date)
+        store.delete_where_set_in("voucher_reconciliation", old_sets)
+        store.delete_where_set_in("voucher_line", old_sets)
+        store.delete_where_date("voucher_set", only_date)
+        store.delete_where_date("voucher_parse_log", only_date)
+        store.insert("voucher_set", SET_COLUMNS, payload.set_rows)
+        store.insert("voucher_line", LINE_COLUMNS, payload.lines)
+        store.insert("voucher_reconciliation", RECON_COLUMNS, payload.recon_rows)
+        store.insert("voucher_parse_log", LOG_COLUMNS, payload.logs)
+
+        tags = store.vendor_tags()
+        vendors = build_vendors(*store.lines_for_vendors())
+        for vendor in vendors:
+            vendor["category"], vendor["tag_source"] = tags.get(vendor["vendor_norm"], (None, None))
+        store.delete_all("vendor")
+        store.insert("vendor", VENDOR_COLUMNS_WITH_TAGS, vendors)
+        return
+
+    if reload:
+        # Only facts tables. Nothing outside schema facts is touched.
+        for table in FACT_TABLES:
+            store.delete_all(table)
+    store.insert("voucher_set", SET_COLUMNS, payload.set_rows)
+    store.insert("voucher_line", LINE_COLUMNS, payload.lines)
+    store.insert("vendor", VENDOR_COLUMNS, payload.vendors)
+    store.insert("voucher_reconciliation", RECON_COLUMNS, payload.recon_rows)
+    store.insert("voucher_parse_log", LOG_COLUMNS, payload.logs)
+
+
 def main() -> None:
     """Parse every voucher artifact and load schema ``facts``."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reload", action="store_true", help="delete and rebuild all rows")
-    parser.add_argument("--only-date", help="restrict to one meeting date")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="delete and rebuild all rows; with --only-date, delete and rebuild only that date's rows",
+    )
+    parser.add_argument("--only-date", help="restrict to one meeting date (YYYY-MM-DD)")
     parser.add_argument("--progress", action="store_true", help="progress on stderr")
     parser.add_argument("--dry-run", action="store_true", help="parse but write nothing")
     args = parser.parse_args()
@@ -923,6 +1122,7 @@ def main() -> None:
     kept = [a for a in artifacts if a.exclusion is None and a.resolved_path]
     if args.only_date:
         kept = [a for a in kept if a.meeting_date == args.only_date]
+        print(single_date_caveat(args.only_date), file=sys.stderr)
 
     agenda_by_date = {row["meeting_date"]: row["document_id"] for row in census.voucher_agenda_items(db.query_dicts)}
 
@@ -1151,20 +1351,10 @@ def main() -> None:
             )
         return
 
+    payload = FactsPayload(set_rows=set_rows, lines=all_lines, vendors=vendors, recon_rows=recon_rows, logs=logs)
     with db.connect() as conn:
         with conn.cursor() as cur:
-            if args.reload:
-                # Only facts tables. Nothing outside schema facts is touched.
-                cur.execute("DELETE FROM facts.voucher_reconciliation")
-                cur.execute("DELETE FROM facts.voucher_line")
-                cur.execute("DELETE FROM facts.voucher_set")
-                cur.execute("DELETE FROM facts.vendor")
-                cur.execute("DELETE FROM facts.voucher_parse_log")
-            _insert(cur, "facts", "voucher_set", SET_COLUMNS, set_rows)
-            _insert(cur, "facts", "voucher_line", LINE_COLUMNS, all_lines)
-            _insert(cur, "facts", "vendor", VENDOR_COLUMNS, vendors)
-            _insert(cur, "facts", "voucher_reconciliation", RECON_COLUMNS, recon_rows)
-            _insert(cur, "facts", "voucher_parse_log", LOG_COLUMNS, logs)
+            write_facts(PostgresStore(cur), payload, reload=args.reload, only_date=args.only_date)
     print("loaded")
 
 

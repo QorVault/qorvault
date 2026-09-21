@@ -1479,3 +1479,31 @@ rm -rf ~/redaction-scratch
 `main` is checked out in no worktree (`git worktree list`), so the checkout
 above does not collide with another session. `no-commit-to-branch` in
 pre-commit blocks commits on `main`, not fast-forwards.
+
+---
+
+# Addendum 2026-09-21 — commit SHAs above were re-minted by a re-signing pass
+
+`filter-branch` mints new commit objects and does not carry signatures, so
+the sixteen voucher commits it rewrote (`71273b2` through `782dd5a`) were
+unsigned. On 2026-09-20, before the first push of `main` to GitHub, the
+operator had them re-signed: `git rebase --force-rebase --gpg-sign 29557ed`
+in a throwaway worktree, which re-minted every commit from `71273b2` to the
+tip. Trees, authors, author dates and messages are byte-identical to what
+this log describes; only the signatures and committer timestamps differ.
+Verified pairwise before the push: 20 of 20 identical, 39 of 39 commits in
+`origin/main..main` signed.
+
+Two SHAs quoted in this log therefore no longer resolve. Read them as:
+
+| In this log | Signed replacement | Commit |
+|---|---|---|
+| `646e67e` | `b8f9f81` | `feat: publish 2026 voucher samples and cycle exports with 117 operator-allowlisted payees` |
+| `782dd5a` | `848e788` | `security: ignore withheld-payee worksheets` |
+
+The pre-re-sign tip `64d69a1` is preserved locally as
+`backup/main-pre-resign-2026-09-20`; it was never pushed. `main` was pushed
+to `origin/main` at `187d794` on 2026-09-21 after a credential scan
+(`secret-scan.sh` over every new blob, gitleaks over the range) and a
+withheld-name scan of every new blob came back with no individual payee in
+any voucher artifact.

@@ -101,6 +101,11 @@ class MemoryStore:
 
 
 # --------------------------------------------------------------- fixtures --
+def _sha(*parts: str) -> str:
+    """A distinct, stable sha256 per synthetic file: parse_log has UNIQUE (file_sha256)."""
+    return hashlib.sha256(("test:" + ":".join(parts)).encode()).hexdigest()
+
+
 def _line(set_id: str, seq: int, vendor: str, amount: str, **overrides) -> dict:
     row = {c: None for c in LINE_COLUMNS}
     row.update(
@@ -117,9 +122,9 @@ def _line(set_id: str, seq: int, vendor: str, amount: str, **overrides) -> dict:
         is_credit=False,
         amount_paren=False,
         reason_code=None,
-        source="test",
+        source="corpus_pdf",
         locator_file_path=f"/test/{set_id}.pdf",
-        locator_file_sha256="0" * 64,
+        locator_file_sha256=_sha(set_id),
         locator_page=1,
         locator_char_offset=seq * 10,
         locator_quote=f"{vendor} {amount}",
@@ -142,9 +147,9 @@ def _set(meeting_date: str, fund: str, total: str, **overrides) -> dict:
         check_count=2,
         reconciled=True,
         delta=Decimal("0"),
-        source="test",
+        source="corpus_pdf",
         locator_file_path=f"/test/{meeting_date}-{fund}.pdf",
-        locator_file_sha256="0" * 64,
+        locator_file_sha256=_sha(f"{meeting_date}:{fund}"),
     )
     row.update(overrides)
     return row
@@ -152,7 +157,7 @@ def _set(meeting_date: str, fund: str, total: str, **overrides) -> dict:
 
 def _recon(set_id: str, **overrides) -> dict:
     row = {c: None for c in RECON_COLUMNS}
-    row.update(set_id=set_id, basis="register_fund_total", match=True, delta=Decimal("0"))
+    row.update(set_id=set_id, basis="recap_fund_total", match=True, delta=Decimal("0"))
     row.update(overrides)
     return row
 
@@ -160,7 +165,7 @@ def _recon(set_id: str, **overrides) -> dict:
 def _log(meeting_date: str, fund: str, **overrides) -> dict:
     row = {c: None for c in LOG_COLUMNS}
     row.update(
-        file_sha256="0" * 64,
+        file_sha256=_sha(f"{meeting_date}:{fund}"),
         file_path=f"/test/{meeting_date}-{fund}.pdf",
         meeting_date=meeting_date,
         fund=fund,
@@ -174,7 +179,7 @@ def _log(meeting_date: str, fund: str, **overrides) -> dict:
         regex_agree=0,
         regex_disagree=0,
         regex_miss=0,
-        source="test",
+        source="corpus_pdf",
     )
     row.update(overrides)
     return row

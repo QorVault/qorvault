@@ -1,4 +1,4 @@
-optimum[onnxruntime]>=1.17.0
+optimum[onnxruntime]>=2.1.0
 onnxruntime>=1.17.0
 transformers>=4.38.0
 qdrant-client>=1.9.0
